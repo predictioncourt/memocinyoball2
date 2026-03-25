@@ -104,6 +104,62 @@
     hint: null,
   };
 
+  // --- UI Elements ---
+  const ui = {
+    overlay: document.getElementById('room-overlay'),
+    login: document.getElementById('room-login'),
+    selection: document.getElementById('room-selection'),
+    playerName: document.getElementById('player-name'),
+    btnLogin: document.getElementById('btn-login'),
+    newRoomName: document.getElementById('new-room-name'),
+    btnCreate: document.getElementById('btn-create'),
+    btnRefresh: document.getElementById('btn-refresh'),
+    roomList: document.getElementById('room-list'),
+  };
+
+  function initUI() {
+    if (!ui.btnLogin) return;
+
+    ui.btnLogin.addEventListener('click', () => {
+      const name = ui.playerName.value.trim();
+      if (!name) {
+        alert('Adını yazmalısın!');
+        return;
+      }
+      lobby.localPlayerName = name; // Save for later
+      ui.login.style.display = 'none';
+      ui.selection.style.display = 'block';
+      
+      // Request room list via signaling server
+      if (network.ws && network.ws.readyState === WebSocket.OPEN) {
+         sendNetworkMessage({ type: 'list_rooms' });
+      }
+    });
+
+    ui.btnCreate.addEventListener('click', () => {
+      const name = ui.newRoomName.value.trim() || 'Oda';
+      sendNetworkMessage({ type: 'create_room', name, playerName: lobby.localPlayerName });
+    });
+
+    ui.btnRefresh.addEventListener('click', () => {
+      sendNetworkMessage({ type: 'list_rooms' });
+    });
+  }
+
+  function updateRoomList(rooms) {
+    if (!ui.roomList) return;
+    ui.roomList.innerHTML = rooms.length === 0 ? '<p>Oda yok, bir tane kur!</p>' : '';
+    rooms.forEach(r => {
+      const div = document.createElement('div');
+      div.className = 'room-item';
+      div.innerHTML = `<span>${r.name} (${r.players}/10)</span><button>Katıl</button>`;
+      div.querySelector('button').addEventListener('click', () => {
+         sendNetworkMessage({ type: 'join_room', roomId: r.id, playerName: lobby.localPlayerName });
+      });
+      ui.roomList.appendChild(div);
+    });
+  }
+
   const network = {
     ws: null,
     connected: false,
@@ -2278,11 +2334,15 @@
 
   document.addEventListener('keydown', (event) => {
     if (chat.input && document.activeElement === chat.input) return;
+    if (ui.playerName && document.activeElement === ui.playerName) return;
+    if (ui.newRoomName && document.activeElement === ui.newRoomName) return;
     input.keys.add(event.code);
     handleKeyDown(event);
   });
 
   document.addEventListener('keyup', (event) => {
+    if (ui.playerName && document.activeElement === ui.playerName) return;
+    if (ui.newRoomName && document.activeElement === ui.newRoomName) return;
     input.keys.delete(event.code);
     handleKeyUp(event);
   });
@@ -2294,6 +2354,7 @@
   resetLobbyForPlayers('Sen', 'Rakip');
   initChat();
   initControlsPanel();
+  initUI();
   resizeCanvas();
   requestAnimationFrame(tick);
   connectNetwork();
