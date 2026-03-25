@@ -8,6 +8,27 @@
 </head>
 <body>
   <canvas id="game"></canvas>
+
+  <div id="room-overlay" class="overlay">
+    <div class="room-panel">
+      <h2>Osimhen Ball</h2>
+      <div id="room-login">
+        <input type="text" id="player-name" placeholder="Adını yaz..." maxlength="12">
+        <button id="btn-login">Giriş Yap</button>
+      </div>
+      <div id="room-selection" style="display:none">
+        <div class="room-actions">
+          <input type="text" id="new-room-name" placeholder="Oda adı..." maxlength="12">
+          <button id="btn-create">Oda Kur</button>
+          <button id="btn-refresh">Yenile</button>
+        </div>
+        <div id="room-list">
+          <p>Odalar yükleniyor...</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="chat">
     <div id="chat-messages"></div>
     <form id="chat-form" autocomplete="off">
