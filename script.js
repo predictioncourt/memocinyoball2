@@ -109,24 +109,25 @@
     connected: false,
     role: 'offline',
     id: null,
+    hostId: null,
     remoteKeys: new Set(),
     snapshotTimer: null,
     lastRemoteKeys: new Set(),
     snapshotTargets: { players: {}, ball: null },
     snapshotBuffer: [],
-    snapshotDelay: 100,
+    snapshotDelay: 45,
     snapshotMax: 30,
+    snapshotInterval: 33,
     clientSmoothingReady: false,
+    lastSentInputSignature: '',
+    lastInputSentAt: 0,
     webrtc: {
       pc: null,
       dc: null,
-      candidates: [],
+      remoteId: null,
+      outboundQueue: [],
+      pendingCandidates: [],
       ready: false,
-    },
-    lockstep: {
-      currentTick: 0,
-      inputBuffer: {}, // { tick: { local: Set, remote: Set } }
-      inputDelay: 4,   // ticks to look ahead
     },
   };
 
@@ -255,6 +256,38 @@
     network.snapshotTargets = { players: {}, ball: null };
     network.snapshotBuffer = [];
     network.clientSmoothingReady = false;
+  }
+
+  function resetWebRTC(closePeer = true) {
+    if (closePeer) {
+      if (network.webrtc.dc) {
+        network.webrtc.dc.onopen = null;
+        network.webrtc.dc.onmessage = null;
+        network.webrtc.dc.onclose = null;
+        network.webrtc.dc.onerror = null;
+        if (network.webrtc.dc.readyState !== 'closed') {
+          network.webrtc.dc.close();
+        }
+      }
+      if (network.webrtc.pc) {
+        network.webrtc.pc.onicecandidate = null;
+        network.webrtc.pc.ondatachannel = null;
+        network.webrtc.pc.onconnectionstatechange = null;
+        network.webrtc.pc.close();
+      }
+    }
+    network.webrtc = {
+      pc: null,
+      dc: null,
+      remoteId: null,
+      outboundQueue: [],
+      pendingCandidates: [],
+      ready: false,
+    };
+    network.remoteKeys = new Set();
+    network.lastRemoteKeys = new Set();
+    network.lastSentInputSignature = '';
+    network.lastInputSentAt = 0;
   }
 
   function setupPlayers(localName, remoteName) {
@@ -514,23 +547,96 @@
   }
 
   function sendP2PMessage(payload) {
+    const encoded = JSON.stringify(payload);
     if (network.webrtc.dc && network.webrtc.dc.readyState === 'open') {
-      network.webrtc.dc.send(JSON.stringify(payload));
-    } else {
-      // Fallback to WS if DC not ready (or for signaling)
-      // Actually, inputs should only go through DC in lockstep
+      network.webrtc.dc.send(encoded);
+      return true;
+    }
+    if (network.webrtc.dc && network.webrtc.dc.readyState === 'connecting') {
+      network.webrtc.outboundQueue.push(encoded);
+    }
+    return false;
+  }
+
+  function flushQueuedP2PMessages() {
+    if (!network.webrtc.dc || network.webrtc.dc.readyState !== 'open') return;
+    while (network.webrtc.outboundQueue.length) {
+      network.webrtc.dc.send(network.webrtc.outboundQueue.shift());
+    }
+  }
+
+  function handleRealtimeMessage(msg) {
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.type === 'snapshot') {
+      if (network.role !== 'host') {
+        applySnapshot(msg.state);
+      }
+      return;
+    }
+    if (msg.type === 'input') {
+      if (network.role === 'host') {
+        const next = new Set(msg.keys || []);
+        handleRemoteKeyChange(next);
+        network.remoteKeys = next;
+      }
+      return;
+    }
+    if (msg.type === 'menu_action') {
+      if (network.role === 'host') {
+        applyMenuAction(msg.action);
+      }
+      return;
+    }
+    if (msg.type === 'chat') {
+      if (msg.from === network.id) return;
+      addChatMessage('Rakip', msg.text || '');
+    }
+  }
+
+  function sendLocalInput(force = false) {
+    if (network.role !== 'client') return;
+    const keys = buildNetworkInputKeys();
+    const signature = [...keys].sort().join('|');
+    const now = performance.now();
+    if (!force && signature === network.lastSentInputSignature && now - network.lastInputSentAt < 0.1 * 1000) {
+      return;
+    }
+    if (!network.webrtc.ready) return;
+    sendP2PMessage({ type: 'input', keys });
+    network.lastSentInputSignature = signature;
+    network.lastInputSentAt = now;
+  }
+
+  async function flushPendingIceCandidates() {
+    const pc = network.webrtc.pc;
+    if (!pc || !pc.remoteDescription) return;
+    while (network.webrtc.pendingCandidates.length) {
+      const candidate = network.webrtc.pendingCandidates.shift();
+      await pc.addIceCandidate(new RTCIceCandidate(candidate));
     }
   }
 
   function setupWebRTC(remoteId) {
+    if (network.webrtc.pc) {
+      network.webrtc.remoteId = remoteId;
+      return network.webrtc.pc;
+    }
     const pc = new RTCPeerConnection({
       iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
     });
     network.webrtc.pc = pc;
+    network.webrtc.remoteId = remoteId;
 
     pc.onicecandidate = (e) => {
       if (e.candidate) {
         sendNetworkMessage({ type: 'signal', to: remoteId, data: { candidate: e.candidate } });
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      const state = pc.connectionState;
+      if (state === 'failed' || state === 'closed' || state === 'disconnected') {
+        network.webrtc.ready = false;
       }
     };
 
@@ -547,44 +653,32 @@
   }
 
   function setupDataChannel(dc) {
-     network.webrtc.dc = dc;
-     dc.onopen = () => {
-       console.log('P2P DataChannel open');
-       if (network.role === 'host') {
-         network.webrtc.ready = true;
-         // Send initial state to sync
-         sendP2PMessage({ 
-           type: 'lockstep_sync', 
-           tick: 0,
-           state: {
-             score: state.score,
-             ball: { x: state.ball.x, y: state.ball.y, z: state.ball.z, vx: state.ball.vx, vy: state.ball.vy, vz: state.ball.vz },
-             hostChar: state.players['host']?.character || 'mbappe',
-             guestChar: state.players['guest']?.character || 'mbappe',
-           }
-         });
-       }
-     };
-     dc.onmessage = (e) => {
-       const msg = JSON.parse(e.data);
-       if (msg.type === 'lockstep_input') {
-         const { tick, keys } = msg;
-         if (!network.lockstep.inputBuffer[tick]) {
-           network.lockstep.inputBuffer[tick] = { local: null, remote: null };
-         }
-         network.lockstep.inputBuffer[tick].remote = new Set(keys);
-       } else if (msg.type === 'lockstep_sync') {
-         // Sync initial state
-         state.score = msg.state.score;
-         Object.assign(state.ball, msg.state.ball);
-         if (state.players['host']) state.players['host'].character = msg.state.hostChar;
-         if (state.players['guest']) state.players['guest'].character = msg.state.guestChar;
-         network.lockstep.currentTick = msg.tick;
-         network.webrtc.ready = true;
-         console.log('P2P Synced and Ready');
-       }
-     };
-   }
+    network.webrtc.dc = dc;
+    dc.onopen = () => {
+      network.webrtc.ready = true;
+      flushQueuedP2PMessages();
+      if (network.role === 'host') {
+        sendP2PMessage({ type: 'snapshot', state: buildSnapshot() });
+      } else {
+        sendLocalInput(true);
+      }
+    };
+    dc.onmessage = (e) => {
+      let msg = null;
+      try {
+        msg = JSON.parse(e.data);
+      } catch (err) {
+        return;
+      }
+      handleRealtimeMessage(msg);
+    };
+    dc.onclose = () => {
+      network.webrtc.ready = false;
+    };
+    dc.onerror = () => {
+      network.webrtc.ready = false;
+    };
+  }
 
   async function handleSignal(from, data) {
     if (!network.webrtc.pc) {
@@ -594,13 +688,19 @@
 
     if (data.offer) {
       await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+      await flushPendingIceCandidates();
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       sendNetworkMessage({ type: 'signal', to: from, data: { answer } });
     } else if (data.answer) {
       await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+      await flushPendingIceCandidates();
     } else if (data.candidate) {
-      await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+      if (pc.remoteDescription && pc.remoteDescription.type) {
+        await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+      } else {
+        network.webrtc.pendingCandidates.push(data.candidate);
+      }
     }
   }
 
@@ -630,7 +730,7 @@
       const text = chat.input.value.trim();
       if (!text) return;
       addChatMessage('Sen', text);
-      sendNetworkMessage({ type: 'chat', text, from: network.id });
+      sendP2PMessage({ type: 'chat', text, from: network.id });
       chat.input.value = '';
       chat.input.focus();
     });
@@ -660,10 +760,10 @@
       clearInterval(network.snapshotTimer);
     }
     network.snapshotTimer = setInterval(() => {
-      if (network.role === 'host' && !network.webrtc.ready) {
-        sendNetworkMessage({ type: 'snapshot', state: buildSnapshot() });
+      if (network.role === 'host' && network.webrtc.ready) {
+        sendP2PMessage({ type: 'snapshot', state: buildSnapshot() });
       }
-    }, 16);
+    }, network.snapshotInterval);
   }
 
   function handleRemoteKeyChange(nextKeys) {
@@ -933,9 +1033,10 @@
         return;
       }
       if (msg.type === 'role') {
+        resetWebRTC();
         network.role = msg.role;
         network.id = msg.id;
-        network.hostId = msg.hostId;
+        network.hostId = msg.hostId || network.hostId || msg.id;
         resetClientSmoothing();
         const remoteName = network.role === 'host' ? 'Rakip' : 'Ev Sahibi';
         setupPlayers('Sen', remoteName);
@@ -954,30 +1055,15 @@
         }
       } else if (msg.type === 'signal') {
         handleSignal(msg.from, msg.data);
-      } else if (msg.type === 'snapshot') {
-        if (network.role !== 'host' && !network.webrtc.ready) {
-          applySnapshot(msg.state);
-        }
-      } else if (msg.type === 'input') {
-        if (network.role === 'host') {
-          const next = new Set(msg.keys || []);
-          handleRemoteKeyChange(next);
-          network.remoteKeys = next;
-        }
-      } else if (msg.type === 'menu_action') {
-        if (network.role === 'host') {
-          applyMenuAction(msg.action);
-        }
-      } else if (msg.type === 'chat') {
-        if (msg.from === network.id) return;
-        addChatMessage('Rakip', msg.text || '');
       } else if (msg.type === 'host_changed') {
+        network.hostId = msg.id || network.hostId;
         network.role = msg.id === network.id ? 'host' : 'client';
       }
     });
     ws.addEventListener('close', () => {
       network.connected = false;
       network.role = 'offline';
+      resetWebRTC();
     });
   }
 
@@ -1330,27 +1416,27 @@
     if (state.mode === 'menu') {
       if (network.role === 'client') {
         if (event.code === KEYS.wide) {
-          sendNetworkMessage({ type: 'menu_action', action: { type: 'field', value: 'wide' } });
+          sendP2PMessage({ type: 'menu_action', action: { type: 'field', value: 'wide' } });
         } else if (event.code === KEYS.medium) {
-          sendNetworkMessage({ type: 'menu_action', action: { type: 'field', value: 'medium' } });
+          sendP2PMessage({ type: 'menu_action', action: { type: 'field', value: 'medium' } });
         } else if (event.code === KEYS.short) {
-          sendNetworkMessage({ type: 'menu_action', action: { type: 'field', value: 'short' } });
+          sendP2PMessage({ type: 'menu_action', action: { type: 'field', value: 'short' } });
         } else if (event.code === KEYS.mode2 || event.code === 'Numpad1') {
           if (state.menuStep === 'character') {
-            sendNetworkMessage({ type: 'menu_action', action: { type: 'character', value: 'mbappe' } });
+            sendP2PMessage({ type: 'menu_action', action: { type: 'character', value: 'mbappe' } });
           } else {
-            sendNetworkMessage({ type: 'menu_action', action: { type: 'mode', value: 1 } });
+            sendP2PMessage({ type: 'menu_action', action: { type: 'mode', value: 1 } });
           }
         } else if (event.code === KEYS.mode3 || event.code === 'Numpad2') {
           if (state.menuStep === 'character') {
-            sendNetworkMessage({ type: 'menu_action', action: { type: 'character', value: 'juninho' } });
+            sendP2PMessage({ type: 'menu_action', action: { type: 'character', value: 'juninho' } });
           } else if (!network.connected) {
-            sendNetworkMessage({ type: 'menu_action', action: { type: 'mode', value: 3 } });
+            sendP2PMessage({ type: 'menu_action', action: { type: 'mode', value: 3 } });
           }
         } else if (event.code === KEYS.mode4 && !network.connected) {
-          sendNetworkMessage({ type: 'menu_action', action: { type: 'mode', value: 4 } });
+          sendP2PMessage({ type: 'menu_action', action: { type: 'mode', value: 4 } });
         } else if (event.code === KEYS.start) {
-          sendNetworkMessage({ type: 'menu_action', action: { type: 'start' } });
+          sendP2PMessage({ type: 'menu_action', action: { type: 'start' } });
         }
         return;
       }
@@ -2276,94 +2362,21 @@
     }
   }
 
-  function tryLockstepTick() {
-    const tick = network.lockstep.currentTick;
-    
-    // 1. Buffering local input for this tick if not already there
-    if (!network.lockstep.inputBuffer[tick]) {
-      network.lockstep.inputBuffer[tick] = { local: null, remote: null };
-    }
-    if (network.lockstep.inputBuffer[tick].local === null) {
-      network.lockstep.inputBuffer[tick].local = buildNetworkInputKeys();
-    }
-
-    // 2. Check if we have both inputs
-    const buf = network.lockstep.inputBuffer[tick];
-    if (buf.local !== null && buf.remote !== null) {
-      // Run the simulation step
-      updateLockstep(FIXED_SIM_STEP, buf.local, buf.remote);
-      
-      // Cleanup and advance
-      delete network.lockstep.inputBuffer[tick];
-      network.lockstep.currentTick++;
-      return true;
-    }
-    return false;
-  }
-
-  function updateLockstep(dt, localKeys, remoteKeys) {
-    // This replaces the old update logic but ensures it uses the provided keys
-    // instead of global input state or network.remoteKeys
-    
-    // Temporary swap of keys to reuse existing logic
-    const oldLocalKeys = input.keys;
-    const oldRemoteKeys = network.remoteKeys;
-    
-    // In lockstep, we need to know which player is which.
-    // Let's assume player1 is always host and player2 is client for simulation purposes.
-    // The keys need to be applied to the correct player state.
-    
-    // TODO: Implement deterministic update
-    update(dt, localKeys, remoteKeys);
-  }
-
-  function sendLocalInput() {
-    if (!network.webrtc.ready) return;
-    
-    // We send input for currentTick + delay to account for RTT
-    const targetTick = network.lockstep.currentTick + network.lockstep.inputDelay;
-    const keys = buildNetworkInputKeys();
-    
-    // Buffer it locally too
-    if (!network.lockstep.inputBuffer[targetTick]) {
-      network.lockstep.inputBuffer[targetTick] = { local: null, remote: null };
-    }
-    network.lockstep.inputBuffer[targetTick].local = keys;
-    
-    sendP2PMessage({ type: 'lockstep_input', tick: targetTick, keys: [...keys] });
-  }
-
   function tick(now) {
     if (!manualTime) {
       const dt = Math.min(0.1, (now - lastTime) / 1000);
       lastTime = now;
       fixedStepAccumulator += dt;
-      
-      // Send input ahead of time
       sendLocalInput();
 
       let steps = 0;
-      if (network.webrtc.ready) {
-        // Lockstep mode: Simulation advances only when both inputs are ready
-        while (fixedStepAccumulator >= FIXED_SIM_STEP && steps < MAX_SIM_STEPS_PER_FRAME) {
-          if (tryLockstepTick()) {
-            fixedStepAccumulator -= FIXED_SIM_STEP;
-            steps += 1;
-          } else {
-            // Wait for remote input - effectively "pausing" if lag is too high
-            break; 
-          }
-        }
-      } else {
-        // Fallback to old snapshot mode while waiting for P2P
-        while (fixedStepAccumulator >= FIXED_SIM_STEP && steps < MAX_SIM_STEPS_PER_FRAME) {
-          update(FIXED_SIM_STEP, null, null);
-          fixedStepAccumulator -= FIXED_SIM_STEP;
-          steps += 1;
-        }
-        applyClientSmoothing(dt);
+      while (fixedStepAccumulator >= FIXED_SIM_STEP && steps < MAX_SIM_STEPS_PER_FRAME) {
+        update(FIXED_SIM_STEP, null, null);
+        fixedStepAccumulator -= FIXED_SIM_STEP;
+        steps += 1;
       }
-      
+      applyClientSmoothing(dt);
+
       if (steps === MAX_SIM_STEPS_PER_FRAME) {
         fixedStepAccumulator = 0;
       }
