@@ -1,0 +1,137 @@
+:root {
+  --page-bg: #e4eadf;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--page-bg);
+  overflow: hidden;
+  font-family: "Trebuchet MS", "Verdana", sans-serif;
+}
+
+#game {
+  display: block;
+  width: 100vw;
+  height: 100vh;
+}
+
+#chat {
+  position: fixed;
+  left: 18px;
+  bottom: 18px;
+  width: 200px;
+  max-width: calc(100vw - 36px);
+  background: rgba(255, 255, 255, 0.9);
+  border: 2px solid rgba(22, 48, 33, 0.25);
+  border-radius: 12px;
+  padding: 6px;
+  backdrop-filter: blur(6px);
+}
+
+#chat-messages {
+  height: 90px;
+  overflow-y: auto;
+  font-size: 11px;
+  color: #163021;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 2px 2px 5px;
+}
+
+#chat-form {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 5px;
+}
+
+#chat-input {
+  height: 22px;
+  border: 1px solid rgba(22, 48, 33, 0.35);
+  border-radius: 8px;
+  padding: 0 6px;
+  font-size: 11px;
+  outline: none;
+}
+
+#chat-input:focus {
+  border-color: rgba(58, 120, 255, 0.8);
+}
+
+#chat-send {
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: none;
+  background: #3a78ff;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+#chat-send:hover {
+  background: #2f66de;
+}
+
+#controls {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  width: 240px;
+  max-width: calc(100vw - 36px);
+  background: rgba(255, 255, 255, 0.9);
+  border: 2px solid rgba(22, 48, 33, 0.25);
+  border-radius: 12px;
+  padding: 8px 10px;
+  backdrop-filter: blur(6px);
+  color: #163021;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.controls-title {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.controls-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.controls-row button {
+  min-width: 78px;
+  height: 24px;
+  border-radius: 8px;
+  border: 1px solid rgba(22, 48, 33, 0.35);
+  background: #f4f7f2;
+  color: #163021;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.controls-row button:hover {
+  background: #e8efe3;
+}
+
+.controls-row button.is-listening {
+  border-color: rgba(58, 120, 255, 0.8);
+  background: rgba(58, 120, 255, 0.12);
+}
+
+#controls-hint {
+  font-size: 11px;
+  color: rgba(22, 48, 33, 0.8);
+}

@@ -1,0 +1,5 @@
+node_modules/
+output/
+progress.md
+playwright-actions.json
+npm-debug.log*

@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Osimhen Ball</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="chat">
+    <div id="chat-messages"></div>
+    <form id="chat-form" autocomplete="off">
+      <input id="chat-input" type="text" placeholder="Mesaj yaz..." />
+      <button id="chat-send" type="submit">Gonder</button>
+    </form>
+  </div>
+  <div id="controls">
+    <div class="controls-title">Tus Ayarlari</div>
+    <div class="controls-row">
+      <span>Yerden sut/pas</span>
+      <button id="bind-ground" type="button">Space</button>
+    </div>
+    <div class="controls-row">
+      <span>Havadan pas</span>
+      <button id="bind-air" type="button">B</button>
+    </div>
+    <div class="controls-row">
+      <span>Karakter skill/ozellik</span>
+      <button id="bind-skill" type="button">C</button>
+    </div>
+    <div id="controls-hint">Degistirmek icin butona bas</div>
+  </div>
+  <script src="script.js"></script>
+</body>
+</html>
