@@ -1670,7 +1670,7 @@
       const approachFactor = 1 - clamp(targetDistance / goalDropZone, 0, 1);
       ball.vz -= physics.goalDropGravity * approachFactor * dt;
     }
-    const canScore = ball.z <= ball.r * 5.0; // Increased significantly to allow all air goals in goal mouth area
+    const canScore = ball.z <= ball.r * 0.9;
     if (canScore && inGoalMouth && ball.x - ball.r <= f.left) {
       state.score.red += 1;
       state.freeze = 1.1;
@@ -1694,17 +1694,13 @@
     }
 
     if (ball.x - ball.r < f.left) {
-      if (!inGoalMouth) {
-        ball.x = f.left + ball.r;
-        ball.vx = Math.abs(ball.vx) * physics.ballBounce;
-      }
+      ball.x = f.left + ball.r;
+      ball.vx = Math.abs(ball.vx) * physics.ballBounce;
     }
 
     if (ball.x + ball.r > f.right) {
-      if (!inGoalMouth) {
-        ball.x = f.right - ball.r;
-        ball.vx = -Math.abs(ball.vx) * physics.ballBounce;
-      }
+      ball.x = f.right - ball.r;
+      ball.vx = -Math.abs(ball.vx) * physics.ballBounce;
     }
     return null;
   }
