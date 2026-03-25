@@ -1,10 +1,13 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const url = require('url');
 const WebSocket = require('ws');
 
 const server = http.createServer((req, res) => {
-  let filePath = path.join(__dirname, req.url === '/' ? 'index.html' : req.url);
+  const parsedUrl = url.parse(req.url);
+  let pathname = parsedUrl.pathname;
+  let filePath = path.join(__dirname, pathname === '/' ? 'index.html' : pathname);
   const ext = path.extname(filePath);
   const mime = {
     '.html': 'text/html',
