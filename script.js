@@ -1210,10 +1210,10 @@
     if (!player || player.character !== 'juninho') return;
     if (player.ability.juninhoCooldown > 0) return;
     const influence = getMovementInfluenceDirection(player);
-    state.ball.curveTime = 1.25;
+    state.ball.curveTime = 1.4; // 1.25 -> 1.4
     state.ball.curveX = influence.x;
     state.ball.curveY = influence.y;
-    state.ball.curveForce = 260 * physics.worldScale;
+    state.ball.curveForce = 450 * physics.worldScale; // 260 -> 450
     player.ability.juninhoCooldown = 10;
   }
 
@@ -1620,7 +1620,7 @@
     const f = state.field;
 
     if (ball.curveTime > 0) {
-      const curveRatio = ball.curveTime / 1.25;
+      const curveRatio = ball.curveTime / 1.4; // Corrected to match new curveTime
       ball.vx += ball.curveX * ball.curveForce * curveRatio * dt;
       ball.vy += ball.curveY * ball.curveForce * curveRatio * dt;
       ball.curveTime = Math.max(0, ball.curveTime - dt);
