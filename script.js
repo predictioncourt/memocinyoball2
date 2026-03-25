@@ -127,11 +127,12 @@
         return;
       }
       lobby.localPlayerName = name; // Save for later
+      ui.login.style.display = 'none';
+      ui.selection.style.display = 'block';
       
-      // Sunucuda "oda" (room) sistemi olmadığı için (tek sunucu/tek maç mantığıyla çalıştığından),
-      // giriş yapıldığı anda ekranı gizleyip direkt oyuna bağlıyoruz.
-      if (ui.overlay) {
-        ui.overlay.style.display = 'none';
+      // Request room list via signaling server
+      if (network.ws && network.ws.readyState === WebSocket.OPEN) {
+         sendNetworkMessage({ type: 'list_rooms' });
       }
     });
 
@@ -964,11 +965,23 @@
       } catch (err) {
         return;
       }
+
+      if (msg.type === 'room_list') {
+        updateRoomList(msg.rooms);
+        return;
+      }
+
       if (msg.type === 'role') {
         resetWebRTC();
         network.role = msg.role;
         network.id = msg.id;
         network.hostId = msg.hostId || network.hostId || msg.id;
+        
+        // Eğer role offline değilse, yani bir odaya bağlandıysak arayüzü kapat
+        if (msg.role !== 'offline' && ui.overlay) {
+          ui.overlay.style.display = 'none';
+        }
+
         resetClientSmoothing();
         network.remoteKeys.clear();
         network.lastRemoteKeys.clear();
@@ -976,8 +989,13 @@
         setupPlayers('Sen', remoteName);
         resetLobbyForPlayers('Sen', remoteName);
         computeField(false);
+      } else if (msg.type === 'player_joined') {
+        // Yeni bir oyuncu katıldığında WebRTC başlat
+        if (network.role === 'host') {
+          setupWebRTC(msg.id);
+        }
       } else if (msg.type === 'signal') {
-        // handleSignal(msg.from, msg.data);
+        handleSignal(msg.from, msg.data);
       } else if (msg.type === 'snapshot') {
         if (network.role !== 'host') {
           network.serverTick = msg.tick;
