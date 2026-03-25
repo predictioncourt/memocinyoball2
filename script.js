@@ -1670,7 +1670,7 @@
       const approachFactor = 1 - clamp(targetDistance / goalDropZone, 0, 1);
       ball.vz -= physics.goalDropGravity * approachFactor * dt;
     }
-    const canScore = true; // No height limit for scoring in the goal mouth
+    const canScore = ball.z <= ball.r * 5.0; // Increased significantly to allow all air goals in goal mouth area
     if (canScore && inGoalMouth && ball.x - ball.r <= f.left) {
       state.score.red += 1;
       state.freeze = 1.1;
@@ -1684,31 +1684,26 @@
       return 'blue';
     }
 
-    // Ball collision with side walls (left/right)
+    if (ball.y - ball.r < f.top) {
+      ball.y = f.top + ball.r;
+      ball.vy = Math.abs(ball.vy) * physics.ballBounce;
+    }
+    if (ball.y + ball.r > f.bottom) {
+      ball.y = f.bottom - ball.r;
+      ball.vy = -Math.abs(ball.vy) * physics.ballBounce;
+    }
+
     if (ball.x - ball.r < f.left) {
-      // Only bounce if NOT in the goal mouth OR if the ball is too high (above the crossbar)
-      // Assuming a virtual crossbar height, e.g., ball.r * 6
-      const crossbarHeight = ball.r * 6;
-      if (!inGoalMouth || ball.z > crossbarHeight) {
+      if (!inGoalMouth) {
         ball.x = f.left + ball.r;
         ball.vx = Math.abs(ball.vx) * physics.ballBounce;
-        
-        // If it hit the "crossbar" (in goal mouth but too high), give it some downward velocity
-        if (inGoalMouth && ball.z > crossbarHeight) {
-          ball.vz = -Math.abs(ball.vz) * 0.5;
-        }
       }
     }
 
     if (ball.x + ball.r > f.right) {
-      const crossbarHeight = ball.r * 6;
-      if (!inGoalMouth || ball.z > crossbarHeight) {
+      if (!inGoalMouth) {
         ball.x = f.right - ball.r;
         ball.vx = -Math.abs(ball.vx) * physics.ballBounce;
-
-        if (inGoalMouth && ball.z > crossbarHeight) {
-          ball.vz = -Math.abs(ball.vz) * 0.5;
-        }
       }
     }
     return null;
@@ -1794,15 +1789,6 @@
         resetMatch();
         return;
       }
-    }
-
-    if (ball.y - ball.r < f.top) {
-      ball.y = f.top + ball.r;
-      ball.vy = Math.abs(ball.vy) * physics.ballBounce;
-    }
-    if (ball.y + ball.r > f.bottom) {
-      ball.y = f.bottom - ball.r;
-      ball.vy = -Math.abs(ball.vy) * physics.ballBounce;
     }
 
     state.playerOrder.forEach((player) => {
