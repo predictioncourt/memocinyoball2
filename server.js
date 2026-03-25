@@ -27,8 +27,8 @@ const server = http.createServer((req, res) => {
 });
 
 const wss = new WebSocket.Server({ server });
-const clients = new Map();
-let hostId = null;
+const rooms = new Map(); // roomId -> { hostId: string, clients: Set<string>, name: string }
+const clients = new Map(); // clientId -> { ws: WebSocket, roomId: string }
 
 function send(ws, payload) {
   if (ws.readyState === WebSocket.OPEN) {
@@ -38,17 +38,13 @@ function send(ws, payload) {
 
 wss.on('connection', (ws) => {
   const id = Math.random().toString(36).substr(2, 9);
-  clients.set(id, ws);
-
-  if (!hostId) {
-    hostId = id;
-  }
+  clients.set(id, { ws, roomId: null });
 
   send(ws, {
     type: 'role',
-    role: id === hostId ? 'host' : 'client',
+    role: 'offline', // Başlangıçta odada değil
     id,
-    hostId,
+    hostId: null,
   });
 
   ws.on('message', (message) => {
@@ -59,42 +55,108 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    if (msg.type === 'signal') {
-      const targetWs = clients.get(msg.to);
-      if (targetWs) {
-        send(targetWs, { type: 'signal', from: id, data: msg.data });
+    const client = clients.get(id);
+    const roomId = client ? client.roomId : null;
+    const room = roomId ? rooms.get(roomId) : null;
+
+    if (msg.type === 'list_rooms') {
+      const roomList = [];
+      rooms.forEach((roomData, rId) => {
+        roomList.push({
+          id: rId,
+          name: roomData.name,
+          players: roomData.clients.size
+        });
+      });
+      send(ws, { type: 'room_list', rooms: roomList });
+      return;
+    }
+
+    if (msg.type === 'create_room') {
+      const newRoomId = Math.random().toString(36).substr(2, 9);
+      rooms.set(newRoomId, {
+        hostId: id,
+        clients: new Set([id]),
+        name: msg.name || 'Oda ' + newRoomId
+      });
+      client.roomId = newRoomId;
+      
+      send(ws, {
+        type: 'role',
+        role: 'host',
+        id,
+        hostId: id,
+      });
+      return;
+    }
+
+    if (msg.type === 'join_room') {
+      const targetRoom = rooms.get(msg.roomId);
+      if (targetRoom) {
+        targetRoom.clients.add(id);
+        client.roomId = msg.roomId;
+        
+        send(ws, {
+          type: 'role',
+          role: 'client',
+          id,
+          hostId: targetRoom.hostId,
+        });
+
+        // Host'a yeni oyuncuyu bildir ki WebRTC bağlasın
+        const hostClient = clients.get(targetRoom.hostId);
+        if (hostClient) {
+          send(hostClient.ws, { type: 'player_joined', id });
+        }
       }
       return;
     }
+
+    // Odası olmayan oyuncular aşağıdaki işlemleri yapamaz
+    if (!room) return;
+
+    if (msg.type === 'signal') {
+      const targetClient = clients.get(msg.to);
+      if (targetClient && targetClient.roomId === roomId) {
+        send(targetClient.ws, { type: 'signal', from: id, data: msg.data });
+      }
+      return;
+    }
+    
     if (msg.type === 'snapshot') {
-      if (id !== hostId) return;
-      clients.forEach((clientWs, clientId) => {
-        if (clientId !== hostId) {
+      if (id !== room.hostId) return;
+      room.clients.forEach((clientId) => {
+        if (clientId !== room.hostId) {
+          const clientWs = clients.get(clientId).ws;
           send(clientWs, msg);
         }
       });
       return;
     }
+    
     if (msg.type === 'input') {
-      if (id === hostId) return;
-      const hostWs = clients.get(hostId);
+      if (id === room.hostId) return;
+      const hostWs = clients.get(room.hostId).ws;
       if (hostWs) {
         send(hostWs, { type: 'input', from: id, keys: msg.keys || [], seq: msg.seq });
       }
       return;
     }
+    
     if (msg.type === 'menu_action') {
-      if (id === hostId) return;
-      const hostWs = clients.get(hostId);
+      if (id === room.hostId) return;
+      const hostWs = clients.get(room.hostId).ws;
       if (hostWs) {
         send(hostWs, { type: 'menu_action', from: id, action: msg.action || null });
       }
       return;
     }
+    
     if (msg.type === 'chat') {
       const text = typeof msg.text === 'string' ? msg.text : '';
       if (!text.trim()) return;
-      clients.forEach((clientWs) => {
+      room.clients.forEach((clientId) => {
+        const clientWs = clients.get(clientId).ws;
         send(clientWs, { type: 'chat', from: id, text });
       });
       return;
@@ -102,19 +164,35 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
-    clients.delete(id);
-    if (id === hostId) {
-      hostId = clients.size > 0 ? Array.from(clients.keys())[0] : null;
-      if (hostId) {
-        const newHostWs = clients.get(hostId);
-        send(newHostWs, { type: 'role', role: 'host', id: hostId, hostId });
-        clients.forEach((clientWs, clientId) => {
-          if (clientId !== hostId) {
-            send(clientWs, { type: 'host_changed', hostId });
+    const client = clients.get(id);
+    if (client && client.roomId) {
+      const room = rooms.get(client.roomId);
+      if (room) {
+        room.clients.delete(id);
+        
+        // Eğer çıkan kişi host ise, odadaki başka birini host yap
+        if (id === room.hostId) {
+          if (room.clients.size > 0) {
+            const newHostId = Array.from(room.clients)[0];
+            room.hostId = newHostId;
+            const newHostWs = clients.get(newHostId).ws;
+            send(newHostWs, { type: 'role', role: 'host', id: newHostId, hostId: newHostId });
+            
+            // Diğerlerine yeni hostu bildir
+            room.clients.forEach((clientId) => {
+              if (clientId !== newHostId) {
+                const clientWs = clients.get(clientId).ws;
+                send(clientWs, { type: 'host_changed', hostId: newHostId });
+              }
+            });
+          } else {
+            // Oda boşaldıysa odayı sil
+            rooms.delete(client.roomId);
           }
-        });
+        }
       }
     }
+    clients.delete(id);
   });
 });
 
