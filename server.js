@@ -86,18 +86,11 @@ wss.on('connection', (ws) => {
       });
       return;
     }
-    if (msg.type === 'signal') {
-      const targetWs = clients.get(msg.to);
-      if (targetWs) {
-        send(targetWs, { type: 'signal', from: id, data: msg.data });
-      }
-      return;
-    }
     if (msg.type === 'input') {
       if (id === hostId) return;
       const hostWs = clients.get(hostId);
       if (hostWs) {
-        send(hostWs, { type: 'input', from: id, keys: msg.keys || [] });
+        send(hostWs, { type: 'input', from: id, keys: msg.keys || [], seq: msg.seq });
       }
       return;
     }
@@ -115,6 +108,7 @@ wss.on('connection', (ws) => {
       clients.forEach((clientWs, clientId) => {
         send(clientWs, { type: 'chat', from: id, text });
       });
+      return;
     }
   });
 
@@ -124,7 +118,7 @@ wss.on('connection', (ws) => {
       hostId = clients.keys().next().value || null;
       clients.forEach((clientWs, clientId) => {
         send(clientWs, { type: 'host_changed', id: hostId });
-        send(clientWs, { type: 'role', role: clientId === hostId ? 'host' : 'client', id: clientId });
+        send(clientWs, { type: 'role', role: clientId === hostId ? 'host' : 'client', id: clientId, hostId });
       });
     }
   });
