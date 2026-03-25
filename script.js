@@ -119,16 +119,9 @@
     snapshotMax: 30,
     snapshotInterval: 33,
     clientSmoothingReady: false,
-    lastSentInputSignature: '',
-    lastInputSentAt: 0,
-    webrtc: {
-      pc: null,
-      dc: null,
-      remoteId: null,
-      outboundQueue: [],
-      pendingCandidates: [],
-      ready: false,
-    },
+    inputSeq: 0,
+    pendingInputs: [],
+    lastGuestSeq: 0,
   };
 
   const lobby = {
@@ -256,38 +249,6 @@
     network.snapshotTargets = { players: {}, ball: null };
     network.snapshotBuffer = [];
     network.clientSmoothingReady = false;
-  }
-
-  function resetWebRTC(closePeer = true) {
-    if (closePeer) {
-      if (network.webrtc.dc) {
-        network.webrtc.dc.onopen = null;
-        network.webrtc.dc.onmessage = null;
-        network.webrtc.dc.onclose = null;
-        network.webrtc.dc.onerror = null;
-        if (network.webrtc.dc.readyState !== 'closed') {
-          network.webrtc.dc.close();
-        }
-      }
-      if (network.webrtc.pc) {
-        network.webrtc.pc.onicecandidate = null;
-        network.webrtc.pc.ondatachannel = null;
-        network.webrtc.pc.onconnectionstatechange = null;
-        network.webrtc.pc.close();
-      }
-    }
-    network.webrtc = {
-      pc: null,
-      dc: null,
-      remoteId: null,
-      outboundQueue: [],
-      pendingCandidates: [],
-      ready: false,
-    };
-    network.remoteKeys = new Set();
-    network.lastRemoteKeys = new Set();
-    network.lastSentInputSignature = '';
-    network.lastInputSentAt = 0;
   }
 
   function setupPlayers(localName, remoteName) {
@@ -546,162 +507,14 @@
     network.ws.send(JSON.stringify(payload));
   }
 
-  function sendP2PMessage(payload) {
-    const encoded = JSON.stringify(payload);
-    if (network.webrtc.dc && network.webrtc.dc.readyState === 'open') {
-      network.webrtc.dc.send(encoded);
-      return true;
-    }
-    if (network.webrtc.dc && network.webrtc.dc.readyState === 'connecting') {
-      network.webrtc.outboundQueue.push(encoded);
-    }
-    return false;
-  }
-
-  function flushQueuedP2PMessages() {
-    if (!network.webrtc.dc || network.webrtc.dc.readyState !== 'open') return;
-    while (network.webrtc.outboundQueue.length) {
-      network.webrtc.dc.send(network.webrtc.outboundQueue.shift());
-    }
-  }
-
-  function handleRealtimeMessage(msg) {
-    if (!msg || typeof msg !== 'object') return;
-    if (msg.type === 'snapshot') {
-      if (network.role !== 'host') {
-        applySnapshot(msg.state);
-      }
-      return;
-    }
-    if (msg.type === 'input') {
-      if (network.role === 'host') {
-        const next = new Set(msg.keys || []);
-        handleRemoteKeyChange(next);
-        network.remoteKeys = next;
-      }
-      return;
-    }
-    if (msg.type === 'menu_action') {
-      if (network.role === 'host') {
-        applyMenuAction(msg.action);
-      }
-      return;
-    }
-    if (msg.type === 'chat') {
-      if (msg.from === network.id) return;
-      addChatMessage('Rakip', msg.text || '');
-    }
-  }
-
-  function sendLocalInput(force = false) {
+  function sendLocalInput() {
     if (network.role !== 'client') return;
     const keys = buildNetworkInputKeys();
-    const signature = [...keys].sort().join('|');
-    const now = performance.now();
-    if (!force && signature === network.lastSentInputSignature && now - network.lastInputSentAt < 0.1 * 1000) {
-      return;
-    }
-    if (!network.webrtc.ready) return;
-    sendP2PMessage({ type: 'input', keys });
-    network.lastSentInputSignature = signature;
-    network.lastInputSentAt = now;
-  }
-
-  async function flushPendingIceCandidates() {
-    const pc = network.webrtc.pc;
-    if (!pc || !pc.remoteDescription) return;
-    while (network.webrtc.pendingCandidates.length) {
-      const candidate = network.webrtc.pendingCandidates.shift();
-      await pc.addIceCandidate(new RTCIceCandidate(candidate));
-    }
-  }
-
-  function setupWebRTC(remoteId) {
-    if (network.webrtc.pc) {
-      network.webrtc.remoteId = remoteId;
-      return network.webrtc.pc;
-    }
-    const pc = new RTCPeerConnection({
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
-    });
-    network.webrtc.pc = pc;
-    network.webrtc.remoteId = remoteId;
-
-    pc.onicecandidate = (e) => {
-      if (e.candidate) {
-        sendNetworkMessage({ type: 'signal', to: remoteId, data: { candidate: e.candidate } });
-      }
-    };
-
-    pc.onconnectionstatechange = () => {
-      const state = pc.connectionState;
-      if (state === 'failed' || state === 'closed' || state === 'disconnected') {
-        network.webrtc.ready = false;
-      }
-    };
-
-    if (network.role === 'host') {
-      const dc = pc.createDataChannel('game', { ordered: true });
-      setupDataChannel(dc);
-    } else {
-      pc.ondatachannel = (e) => {
-        setupDataChannel(e.channel);
-      };
-    }
-
-    return pc;
-  }
-
-  function setupDataChannel(dc) {
-    network.webrtc.dc = dc;
-    dc.onopen = () => {
-      network.webrtc.ready = true;
-      flushQueuedP2PMessages();
-      if (network.role === 'host') {
-        sendP2PMessage({ type: 'snapshot', state: buildSnapshot() });
-      } else {
-        sendLocalInput(true);
-      }
-    };
-    dc.onmessage = (e) => {
-      let msg = null;
-      try {
-        msg = JSON.parse(e.data);
-      } catch (err) {
-        return;
-      }
-      handleRealtimeMessage(msg);
-    };
-    dc.onclose = () => {
-      network.webrtc.ready = false;
-    };
-    dc.onerror = () => {
-      network.webrtc.ready = false;
-    };
-  }
-
-  async function handleSignal(from, data) {
-    if (!network.webrtc.pc) {
-      setupWebRTC(from);
-    }
-    const pc = network.webrtc.pc;
-
-    if (data.offer) {
-      await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
-      await flushPendingIceCandidates();
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      sendNetworkMessage({ type: 'signal', to: from, data: { answer } });
-    } else if (data.answer) {
-      await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
-      await flushPendingIceCandidates();
-    } else if (data.candidate) {
-      if (pc.remoteDescription && pc.remoteDescription.type) {
-        await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-      } else {
-        network.webrtc.pendingCandidates.push(data.candidate);
-      }
-    }
+    network.inputSeq++;
+    const seq = network.inputSeq;
+    const keysArr = [...keys];
+    network.pendingInputs.push({ seq, keys: keysArr });
+    sendNetworkMessage({ type: 'input', keys: keysArr, seq });
   }
 
   function addChatMessage(author, text) {
@@ -730,7 +543,7 @@
       const text = chat.input.value.trim();
       if (!text) return;
       addChatMessage('Sen', text);
-      sendP2PMessage({ type: 'chat', text, from: network.id });
+      sendNetworkMessage({ type: 'chat', text, from: network.id });
       chat.input.value = '';
       chat.input.focus();
     });
@@ -760,8 +573,8 @@
       clearInterval(network.snapshotTimer);
     }
     network.snapshotTimer = setInterval(() => {
-      if (network.role === 'host' && network.webrtc.ready) {
-        sendP2PMessage({ type: 'snapshot', state: buildSnapshot() });
+      if (network.role === 'host') {
+        sendNetworkMessage({ type: 'snapshot', state: buildSnapshot() });
       }
     }, network.snapshotInterval);
   }
@@ -914,7 +727,27 @@
         const facingX = safeNumber(p.facing?.x, player.facing.x);
         const facingY = safeNumber(p.facing?.y, player.facing.y);
         nextPlayer.facing = normalize(facingX, facingY);
-        snapshotPlayers[mappedPlayerId] = nextPlayer;
+
+        if (isClient && mappedPlayerId === state.localPlayerId) {
+          player.x = nextPlayer.x;
+          player.y = nextPlayer.y;
+          player.vx = nextPlayer.vx;
+          player.vy = nextPlayer.vy;
+          player.r = nextPlayer.r;
+          player.facing = nextPlayer.facing;
+          if (snapshot.ackSeq !== undefined) {
+            network.pendingInputs = network.pendingInputs.filter(inp => inp.seq > snapshot.ackSeq);
+            network.pendingInputs.forEach(inp => {
+              updatePlayer(player, new Set(inp.keys), 1 / 60);
+              if (hasLocalFieldBounds) {
+                player.x = clamp(player.x, localField.left + player.r, localField.right - player.r);
+                player.y = clamp(player.y, localField.top + player.r, localField.bottom - player.r);
+              }
+            });
+          }
+        } else {
+          snapshotPlayers[mappedPlayerId] = nextPlayer;
+        }
         player.kickFlash = p.kickFlash;
         if (p.character) {
           player.character = p.character;
@@ -976,6 +809,7 @@
 
   function buildSnapshot() {
     return {
+      ackSeq: network.lastGuestSeq,
       mode: state.mode,
       fieldType: state.fieldType,
       score: { ...state.score },
@@ -1033,28 +867,38 @@
         return;
       }
       if (msg.type === 'role') {
-        resetWebRTC();
         network.role = msg.role;
         network.id = msg.id;
         network.hostId = msg.hostId || network.hostId || msg.id;
         resetClientSmoothing();
+        network.inputSeq = 0;
+        network.pendingInputs = [];
+        network.lastGuestSeq = 0;
+        network.remoteKeys = new Set();
+        network.lastRemoteKeys = new Set();
         const remoteName = network.role === 'host' ? 'Rakip' : 'Ev Sahibi';
         setupPlayers('Sen', remoteName);
         resetLobbyForPlayers('Sen', remoteName);
         computeField(false);
         startSnapshotLoop();
-
-        // Start WebRTC connection if we are the client
-        if (network.role === 'client') {
-          (async () => {
-            const pc = setupWebRTC(network.hostId);
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            sendNetworkMessage({ type: 'signal', to: network.hostId, data: { offer } });
-          })();
+      } else if (msg.type === 'snapshot') {
+        if (network.role !== 'host') {
+          applySnapshot(msg.state);
         }
-      } else if (msg.type === 'signal') {
-        handleSignal(msg.from, msg.data);
+      } else if (msg.type === 'input') {
+        if (network.role === 'host') {
+          network.lastGuestSeq = msg.seq;
+          const next = new Set(msg.keys || []);
+          handleRemoteKeyChange(next);
+          network.remoteKeys = next;
+        }
+      } else if (msg.type === 'menu_action') {
+        if (network.role === 'host') {
+          applyMenuAction(msg.action);
+        }
+      } else if (msg.type === 'chat') {
+        if (msg.from === network.id) return;
+        addChatMessage('Rakip', msg.text || '');
       } else if (msg.type === 'host_changed') {
         network.hostId = msg.id || network.hostId;
         network.role = msg.id === network.id ? 'host' : 'client';
@@ -1063,7 +907,8 @@
     ws.addEventListener('close', () => {
       network.connected = false;
       network.role = 'offline';
-      resetWebRTC();
+      network.inputSeq = 0;
+      network.pendingInputs = [];
     });
   }
 
@@ -1416,27 +1261,27 @@
     if (state.mode === 'menu') {
       if (network.role === 'client') {
         if (event.code === KEYS.wide) {
-          sendP2PMessage({ type: 'menu_action', action: { type: 'field', value: 'wide' } });
+          sendNetworkMessage({ type: 'menu_action', action: { type: 'field', value: 'wide' } });
         } else if (event.code === KEYS.medium) {
-          sendP2PMessage({ type: 'menu_action', action: { type: 'field', value: 'medium' } });
+          sendNetworkMessage({ type: 'menu_action', action: { type: 'field', value: 'medium' } });
         } else if (event.code === KEYS.short) {
-          sendP2PMessage({ type: 'menu_action', action: { type: 'field', value: 'short' } });
+          sendNetworkMessage({ type: 'menu_action', action: { type: 'field', value: 'short' } });
         } else if (event.code === KEYS.mode2 || event.code === 'Numpad1') {
           if (state.menuStep === 'character') {
-            sendP2PMessage({ type: 'menu_action', action: { type: 'character', value: 'mbappe' } });
+            sendNetworkMessage({ type: 'menu_action', action: { type: 'character', value: 'mbappe' } });
           } else {
-            sendP2PMessage({ type: 'menu_action', action: { type: 'mode', value: 1 } });
+            sendNetworkMessage({ type: 'menu_action', action: { type: 'mode', value: 1 } });
           }
         } else if (event.code === KEYS.mode3 || event.code === 'Numpad2') {
           if (state.menuStep === 'character') {
-            sendP2PMessage({ type: 'menu_action', action: { type: 'character', value: 'juninho' } });
+            sendNetworkMessage({ type: 'menu_action', action: { type: 'character', value: 'juninho' } });
           } else if (!network.connected) {
-            sendP2PMessage({ type: 'menu_action', action: { type: 'mode', value: 3 } });
+            sendNetworkMessage({ type: 'menu_action', action: { type: 'mode', value: 3 } });
           }
         } else if (event.code === KEYS.mode4 && !network.connected) {
-          sendP2PMessage({ type: 'menu_action', action: { type: 'mode', value: 4 } });
+          sendNetworkMessage({ type: 'menu_action', action: { type: 'mode', value: 4 } });
         } else if (event.code === KEYS.start) {
-          sendP2PMessage({ type: 'menu_action', action: { type: 'start' } });
+          sendNetworkMessage({ type: 'menu_action', action: { type: 'start' } });
         }
         return;
       }
@@ -1966,26 +1811,8 @@
       }
     }
 
-    const authLocal = network.snapshotTargets.players[state.localPlayerId];
-    if (authLocal) {
-      const local = getLocalPlayer();
-      if (local) {
-        const dx = authLocal.x - local.x;
-        const dy = authLocal.y - local.y;
-        const dist = Math.hypot(dx, dy);
-        if (dist > 50) {
-          local.x = authLocal.x;
-          local.y = authLocal.y;
-        } else if (dist > 2) {
-          local.x += dx * 0.1;
-          local.y += dy * 0.1;
-        }
-        local.r = authLocal.r;
-      }
-    }
-
     state.playerOrder.forEach((player) => {
-      if (player.id === state.localPlayerId) return;
+      if (player.id === state.localPlayerId) return; // Local prediction handled in applySnapshot
       const a = older.state.players[player.id];
       if (!a) return;
       const b = newer?.state.players[player.id] || a;
@@ -2367,15 +2194,33 @@
       const dt = Math.min(0.1, (now - lastTime) / 1000);
       lastTime = now;
       fixedStepAccumulator += dt;
-      sendLocalInput();
+
+      if (network.role === 'client') {
+        sendLocalInput();
+      }
 
       let steps = 0;
       while (fixedStepAccumulator >= FIXED_SIM_STEP && steps < MAX_SIM_STEPS_PER_FRAME) {
-        update(FIXED_SIM_STEP, null, null);
+        if (network.role === 'host') {
+          update(FIXED_SIM_STEP, null, null);
+        } else if (network.role === 'client') {
+          const localPlayer = getLocalPlayer();
+          if (localPlayer && state.mode === 'playing' && state.freeze <= 0) {
+            updatePlayer(localPlayer, input.keys, FIXED_SIM_STEP);
+            const f = state.field;
+            if (Number.isFinite(f.left) && Number.isFinite(f.right)) {
+              localPlayer.x = clamp(localPlayer.x, f.left + localPlayer.r, f.right - localPlayer.r);
+              localPlayer.y = clamp(localPlayer.y, f.top + localPlayer.r, f.bottom - localPlayer.r);
+            }
+          }
+        }
         fixedStepAccumulator -= FIXED_SIM_STEP;
         steps += 1;
       }
-      applyClientSmoothing(dt);
+
+      if (network.role === 'client') {
+        applyClientSmoothing(dt);
+      }
 
       if (steps === MAX_SIM_STEPS_PER_FRAME) {
         fixedStepAccumulator = 0;
