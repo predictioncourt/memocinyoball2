@@ -989,6 +989,11 @@
         setupPlayers('Sen', remoteName);
         resetLobbyForPlayers('Sen', remoteName);
         computeField(false);
+        if (network.connected && network.role === 'client') {
+          state.menuStep = 'character';
+        } else {
+          state.menuStep = 'field';
+        }
       } else if (msg.type === 'player_joined') {
         // Yeni bir oyuncu katıldığında WebRTC başlat
         if (network.role === 'host') {
@@ -1008,8 +1013,18 @@
           network.remoteKeys.set('guest', next);
         }
       } else if (msg.type === 'menu_action') {
-        if (network.role === 'host') {
-          applyMenuAction(msg.action);
+        if (
+          network.role === 'host' &&
+          msg.from &&
+          msg.from !== network.id &&
+          msg.action &&
+          msg.action.type === 'character'
+        ) {
+          if (msg.action.value === 'mbappe' || msg.action.value === 'juninho') {
+            setGuestCharacter(msg.action.value);
+          }
+        } else {
+          applyMenuAction(msg.action, true);
         }
       } else if (msg.type === 'chat') {
         if (msg.from === network.id) return;
@@ -1295,40 +1310,64 @@
     }
   }
 
-  function applyMenuAction(action) {
+  function applyMenuAction(action, fromRemote = false) {
     if (!action || state.mode !== 'menu') return;
+    const isOnline = network.connected;
+    const isHost = network.role === 'host';
 
-    if (action.type === 'field' && state.menuStep === 'field') {
+    if (action.type === 'field' && (state.menuStep === 'field' || fromRemote)) {
+      if (isOnline && !isHost && !fromRemote) return;
       if (action.value === 'wide' || action.value === 'medium' || action.value === 'short') {
         state.fieldType = action.value;
         computeField();
-        state.menuStep = 'character';
+        if (!isOnline || isHost || fromRemote) {
+          state.menuStep = 'character';
+        }
       }
       return;
     }
 
-    if (action.type === 'character' && state.menuStep === 'character') {
+    if (action.type === 'character' && (state.menuStep === 'character' || fromRemote)) {
       if (action.value === 'mbappe' || action.value === 'juninho') {
         setLocalCharacter(action.value);
-        state.menuStep = 'mode';
+        if (!isOnline || isHost || fromRemote) {
+          state.menuStep = 'mode';
+        }
       }
       return;
     }
 
-    if (action.type === 'mode' && state.menuStep === 'mode') {
-      if (network.connected) {
-        if (action.value === 1) {
-          setMode(1);
-        }
+    if (action.type === 'mode' && (state.menuStep === 'mode' || fromRemote)) {
+      if (isOnline) {
+        if (!isHost && !fromRemote) return;
+        if (action.value === 1) setMode(1);
       } else if (action.value === 2 || action.value === 3 || action.value === 4) {
         setMode(action.value);
       }
       return;
     }
 
-    if (action.type === 'start' && state.menuStep === 'mode') {
+    if (action.type === 'start') {
+      if (isOnline && !isHost && !fromRemote) return;
+      if (state.menuStep !== 'mode' && !fromRemote) return;
       startMatch();
     }
+  }
+
+  function runLocalMenuAction(action) {
+    applyMenuAction(action);
+    if (network.connected && network.role === 'host' && action.type !== 'character') {
+      sendNetworkMessage({ type: 'menu_action', action });
+    }
+  }
+
+  function setGuestCharacter(character) {
+    const guest = state.players.guest;
+    if (!guest) return;
+    guest.character = character;
+    guest.ability.mbappeBoostTime = 0;
+    guest.ability.mbappeCooldown = 0;
+    guest.ability.juninhoCooldown = 0;
   }
 
   function handleKeyDown(event) {
@@ -1383,60 +1422,48 @@
 
     if (state.mode === 'menu') {
       if (network.role === 'client') {
-        if (event.code === KEYS.wide) {
-          sendNetworkMessage({ type: 'menu_action', action: { type: 'field', value: 'wide' } });
-        } else if (event.code === KEYS.medium) {
-          sendNetworkMessage({ type: 'menu_action', action: { type: 'field', value: 'medium' } });
-        } else if (event.code === KEYS.short) {
-          sendNetworkMessage({ type: 'menu_action', action: { type: 'field', value: 'short' } });
-        } else if (event.code === KEYS.mode2 || event.code === 'Numpad1') {
+        if (event.code === KEYS.mode2 || event.code === 'Numpad1') {
           if (state.menuStep === 'character') {
+            setLocalCharacter('mbappe');
             sendNetworkMessage({ type: 'menu_action', action: { type: 'character', value: 'mbappe' } });
-          } else {
-            sendNetworkMessage({ type: 'menu_action', action: { type: 'mode', value: 1 } });
           }
         } else if (event.code === KEYS.mode3 || event.code === 'Numpad2') {
           if (state.menuStep === 'character') {
+            setLocalCharacter('juninho');
             sendNetworkMessage({ type: 'menu_action', action: { type: 'character', value: 'juninho' } });
-          } else if (!network.connected) {
-            sendNetworkMessage({ type: 'menu_action', action: { type: 'mode', value: 3 } });
           }
-        } else if (event.code === KEYS.mode4 && !network.connected) {
-          sendNetworkMessage({ type: 'menu_action', action: { type: 'mode', value: 4 } });
-        } else if (event.code === KEYS.start) {
-          sendNetworkMessage({ type: 'menu_action', action: { type: 'start' } });
         }
         return;
       }
       if (state.menuStep === 'field') {
         if (event.code === KEYS.wide) {
-          applyMenuAction({ type: 'field', value: 'wide' });
+          runLocalMenuAction({ type: 'field', value: 'wide' });
         } else if (event.code === KEYS.medium) {
-          applyMenuAction({ type: 'field', value: 'medium' });
+          runLocalMenuAction({ type: 'field', value: 'medium' });
         } else if (event.code === KEYS.short) {
-          applyMenuAction({ type: 'field', value: 'short' });
+          runLocalMenuAction({ type: 'field', value: 'short' });
         }
       } else if (state.menuStep === 'character') {
         if (event.code === KEYS.mode2 || event.code === 'Numpad1') {
-          applyMenuAction({ type: 'character', value: 'mbappe' });
+          runLocalMenuAction({ type: 'character', value: 'mbappe' });
         } else if (event.code === KEYS.mode3 || event.code === 'Numpad2') {
-          applyMenuAction({ type: 'character', value: 'juninho' });
+          runLocalMenuAction({ type: 'character', value: 'juninho' });
         }
       } else if (state.menuStep === 'mode') {
         if (network.connected) {
           if (event.code === KEYS.mode2) {
-            applyMenuAction({ type: 'mode', value: 1 });
+            runLocalMenuAction({ type: 'mode', value: 1 });
           } else if (event.code === KEYS.start) {
-            applyMenuAction({ type: 'start' });
+            runLocalMenuAction({ type: 'start' });
           }
         } else if (event.code === KEYS.mode2) {
-          applyMenuAction({ type: 'mode', value: 2 });
+          runLocalMenuAction({ type: 'mode', value: 2 });
         } else if (event.code === KEYS.mode3) {
-          applyMenuAction({ type: 'mode', value: 3 });
+          runLocalMenuAction({ type: 'mode', value: 3 });
         } else if (event.code === KEYS.mode4) {
-          applyMenuAction({ type: 'mode', value: 4 });
+          runLocalMenuAction({ type: 'mode', value: 4 });
         } else if (event.code === KEYS.start) {
-          applyMenuAction({ type: 'start' });
+          runLocalMenuAction({ type: 'start' });
         }
       }
       return;
