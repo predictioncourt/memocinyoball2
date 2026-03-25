@@ -210,9 +210,6 @@
   }
 
   function buildNetworkInputKeys() {
-    if (chat.input && document.activeElement === chat.input) {
-      return new Set();
-    }
     const mapped = new Set();
     input.keys.forEach((code) => {
       mapped.add(resolveInputCode(code));
@@ -623,6 +620,11 @@
     chat.form = document.getElementById('chat-form');
     chat.input = document.getElementById('chat-input');
     if (!chat.form || !chat.input) return;
+    
+    chat.input.addEventListener('focus', () => {
+      input.keys.clear(); // Clear all keys when chat focused to prevent stuck movement
+    });
+
     chat.form.addEventListener('submit', (event) => {
       event.preventDefault();
       const text = chat.input.value.trim();
@@ -1668,7 +1670,7 @@
       const approachFactor = 1 - clamp(targetDistance / goalDropZone, 0, 1);
       ball.vz -= physics.goalDropGravity * approachFactor * dt;
     }
-    const canScore = ball.z <= ball.r * 2.5; // Raised from 0.9 to allow air goals
+    const canScore = ball.z <= ball.r * 5.0; // Increased significantly to allow all air goals in goal mouth area
     if (canScore && inGoalMouth && ball.x - ball.r <= f.left) {
       state.score.red += 1;
       state.freeze = 1.1;
@@ -1692,13 +1694,17 @@
     }
 
     if (ball.x - ball.r < f.left) {
-      ball.x = f.left + ball.r;
-      ball.vx = Math.abs(ball.vx) * physics.ballBounce;
+      if (!inGoalMouth) {
+        ball.x = f.left + ball.r;
+        ball.vx = Math.abs(ball.vx) * physics.ballBounce;
+      }
     }
 
     if (ball.x + ball.r > f.right) {
-      ball.x = f.right - ball.r;
-      ball.vx = -Math.abs(ball.vx) * physics.ballBounce;
+      if (!inGoalMouth) {
+        ball.x = f.right - ball.r;
+        ball.vx = -Math.abs(ball.vx) * physics.ballBounce;
+      }
     }
     return null;
   }
@@ -1752,8 +1758,15 @@
     const hostPlayer = state.players['host'];
     const guestPlayer = state.players['guest'];
 
-    const hostKeys = network.role === 'host' ? (localKeys || input.keys) : (remoteKeys || network.remoteKeys);
-    const guestKeys = network.role === 'client' ? (localKeys || input.keys) : (remoteKeys || network.remoteKeys);
+    let lKeys = localKeys || input.keys;
+    let rKeys = remoteKeys || network.remoteKeys;
+
+    // Ensure we have Set objects for .has()
+    if (Array.isArray(lKeys)) lKeys = new Set(lKeys);
+    if (Array.isArray(rKeys)) rKeys = new Set(rKeys);
+
+    const hostKeys = network.role === 'host' ? lKeys : rKeys;
+    const guestKeys = network.role === 'client' ? lKeys : rKeys;
 
     if (hostPlayer) {
       updatePlayer(hostPlayer, hostKeys, dt);
@@ -2421,6 +2434,7 @@
   };
 
   document.addEventListener('keydown', (event) => {
+    if (chat.input && document.activeElement === chat.input) return;
     input.keys.add(event.code);
     handleKeyDown(event);
   });
