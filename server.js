@@ -77,6 +77,13 @@ wss.on('connection', (ws) => {
     } catch (err) {
       return;
     }
+    if (msg.type === 'signal') {
+      const targetWs = clients.get(msg.to);
+      if (targetWs) {
+        send(targetWs, { type: 'signal', from: id, data: msg.data });
+      }
+      return;
+    }
     if (msg.type === 'snapshot') {
       if (id !== hostId) return;
       clients.forEach((clientWs, clientId) => {
