@@ -1659,18 +1659,38 @@
 
     const goalTop = f.centerY - f.goalWidth / 2;
     const goalBottom = f.centerY + f.goalWidth / 2;
-    const inGoalMouth = ball.y > goalTop && ball.y < goalBottom;
-    const goalDropZone = Math.max(ball.r * 6, f.width * physics.goalDropZoneRatio);
+    
+    // Genişletilmiş kale ağzı kontrolü (top kaleye girmeden önce de düşmeye başlasın diye)
+    const extendedGoalTop = goalTop - ball.r * 2;
+    const extendedGoalBottom = goalBottom + ball.r * 2;
+    const inExtendedGoalMouth = ball.y > extendedGoalTop && ball.y < extendedGoalBottom;
+    
+    // Düşüş bölgesini (goalDropZone) çok daha geniş tutuyoruz
+    const goalDropZone = Math.max(ball.r * 15, f.width * 0.3); // Sahanın %30'una kadar etkili
+    
     const leftDistance = ball.x - f.left;
     const rightDistance = f.right - ball.x;
-    const leftApproach = inGoalMouth && ball.vx < 0 && leftDistance <= goalDropZone;
-    const rightApproach = inGoalMouth && ball.vx > 0 && rightDistance <= goalDropZone;
+    
+    const leftApproach = inExtendedGoalMouth && ball.vx < 0 && leftDistance <= goalDropZone;
+    const rightApproach = inExtendedGoalMouth && ball.vx > 0 && rightDistance <= goalDropZone;
+    
     if (ball.z > 0 && (leftApproach || rightApproach)) {
       const targetDistance = leftApproach ? leftDistance : rightDistance;
+      // Top kaleye yaklaştıkça çarpan artar (1'e yaklaşır)
       const approachFactor = 1 - clamp(targetDistance / goalDropZone, 0, 1);
-      // Increase the gravity pull significantly when approaching the goal
-      ball.vz -= physics.goalDropGravity * approachFactor * dt * 2.5;
+      
+      // Çok daha agresif bir düşüş kuvveti uyguluyoruz
+      // Normal yerçekiminin (900) çok üstünde bir kuvvet (örn: 5000-10000 arası)
+      const dropForce = 8000 * approachFactor;
+      ball.vz -= dropForce * dt;
+      
+      // Eğer top çok yüksekteyse ve kaleye çok yakınsa, direkt aşağı doğru hızlandır
+      if (targetDistance < ball.r * 4 && ball.z > ball.r) {
+         ball.vz -= 15000 * dt;
+      }
     }
+
+    const inGoalMouth = ball.y > goalTop && ball.y < goalBottom;
     const canScore = ball.z <= ball.r * 0.9;
     if (canScore && inGoalMouth && ball.x - ball.r <= f.left) {
       state.score.red += 1;
