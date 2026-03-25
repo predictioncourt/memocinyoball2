@@ -210,6 +210,9 @@
   }
 
   function buildNetworkInputKeys() {
+    if (chat.input && document.activeElement === chat.input) {
+      return new Set();
+    }
     const mapped = new Set();
     input.keys.forEach((code) => {
       mapped.add(resolveInputCode(code));
@@ -1177,7 +1180,7 @@
     if (!player || player.character !== 'mbappe') return false;
     if (player.ability.mbappeCooldown > 0) return false;
     if (isBallNearPlayer(player, 12)) return false;
-    player.ability.mbappeBoostTime = 2;
+    player.ability.mbappeBoostTime = 4;
     player.ability.mbappeCooldown = 15;
     return true;
   }
@@ -1665,7 +1668,7 @@
       const approachFactor = 1 - clamp(targetDistance / goalDropZone, 0, 1);
       ball.vz -= physics.goalDropGravity * approachFactor * dt;
     }
-    const canScore = ball.z <= ball.r * 0.9;
+    const canScore = ball.z <= ball.r * 2.5; // Raised from 0.9 to allow air goals
     if (canScore && inGoalMouth && ball.x - ball.r <= f.left) {
       state.score.red += 1;
       state.freeze = 1.1;
@@ -2115,7 +2118,7 @@
       ctx.fillText(network.connected ? 'Mod: 1v1 (1)' : 'Mod Secimi (1-3)', state.view.w / 2, state.view.h * 0.62);
       ctx.fillText('Enter ile basla', state.view.w / 2, state.view.h * 0.68);
     } else if (state.menuStep === 'character') {
-      ctx.fillText('Mbappe: C ile 2sn hiz +%15 (15sn bekleme)', state.view.w / 2, state.view.h * 0.62);
+      ctx.fillText('Mbappe: C ile 4sn hiz +%15 (15sn bekleme)', state.view.w / 2, state.view.h * 0.62);
       ctx.fillText('Juninho: sut/pasta WASD yonlu falso (10sn bekleme)', state.view.w / 2, state.view.h * 0.68);
     } else {
       ctx.fillText('Secim sonrasi mod ekrani acilir', state.view.w / 2, state.view.h * 0.62);
