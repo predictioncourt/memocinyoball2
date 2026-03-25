@@ -110,20 +110,17 @@
     role: 'offline',
     id: null,
     hostId: null,
-    remoteKeys: new Set(),
-    snapshotTimer: null,
-    lastRemoteKeys: new Set(),
-    snapshotTargets: { players: {}, ball: null },
+    remoteKeys: new Map(), // { playerId: Set }
+    lastRemoteKeys: new Map(),
+    inputBuffer: [],
+    ping: 0,
+    pingStart: 0,
+    serverTick: 0,
+    clientTick: 0,
+    targetTick: 0,
+    tickRate: 60,
+    step: 1 / 60,
     snapshotBuffer: [],
-    snapshotDelay: 45,
-    snapshotMax: 30,
-    snapshotInterval: 33,
-    clientSmoothingReady: false,
-    inputSeq: 0,
-    pendingInputs: [],
-    lastGuestSeq: 0,
-    lastSentInputSignature: '',
-    lastInputSentAt: 0,
     webrtc: {
       pc: null,
       dc: null,
@@ -256,9 +253,7 @@
   }
 
   function resetClientSmoothing() {
-    network.snapshotTargets = { players: {}, ball: null };
     network.snapshotBuffer = [];
-    network.clientSmoothingReady = false;
   }
 
   function resetWebRTC(closePeer = true) {
@@ -297,7 +292,7 @@
     state.players = {};
     state.playerOrder = [];
     
-    // Use absolute IDs for deterministic simulation
+    // Server is the authority now, but we still assign IDs
     const hostPlayer = createPlayerState('host', network.role === 'host' ? localName : remoteName, COLORS.blue);
     const guestPlayer = createPlayerState('guest', network.role === 'client' ? localName : remoteName, COLORS.red);
     
@@ -310,6 +305,11 @@
     
     state.localPlayerId = network.role === 'host' ? 'host' : 'guest';
     state.remotePlayerId = network.role === 'host' ? 'guest' : 'host';
+    
+    network.remoteKeys.set('host', new Set());
+    network.remoteKeys.set('guest', new Set());
+    network.lastRemoteKeys.set('host', new Set());
+    network.lastRemoteKeys.set('guest', new Set());
   }
 
   function setLocalCharacter(character) {
@@ -549,77 +549,53 @@
     network.ws.send(JSON.stringify(payload));
   }
 
-  function sendP2PMessage(payload) {
-    const encoded = JSON.stringify(payload);
-    if (network.webrtc.dc && network.webrtc.dc.readyState === 'open') {
-      network.webrtc.dc.send(encoded);
-      return true;
-    }
-    if (network.webrtc.dc && network.webrtc.dc.readyState === 'connecting') {
-      network.webrtc.outboundQueue.push(encoded);
-    }
-    return false;
-  }
-
-  function flushQueuedP2PMessages() {
-    if (!network.webrtc.dc || network.webrtc.dc.readyState !== 'open') return;
-    while (network.webrtc.outboundQueue.length) {
-      network.webrtc.dc.send(network.webrtc.outboundQueue.shift());
-    }
-  }
-
   function handleRealtimeMessage(msg) {
     if (!msg || typeof msg !== 'object') return;
+    
+    if (msg.type === 'ping') {
+      sendNetworkMessage({ type: 'pong' });
+      return;
+    }
+    
+    if (msg.type === 'pong') {
+      network.ping = performance.now() - network.pingStart;
+      return;
+    }
+
+    if (msg.type === 'sync') {
+      network.serverTick = msg.tick;
+      applySnapshot(msg.state);
+      return;
+    }
+    
     if (msg.type === 'snapshot') {
-      if (network.role !== 'host') {
-        applySnapshot(msg.state);
-      }
+      network.serverTick = msg.tick;
+      applySnapshot(msg.state);
       return;
     }
-    if (msg.type === 'input') {
-      if (network.role === 'host') {
-        network.lastGuestSeq = msg.seq;
-        const next = new Set(msg.keys || []);
-        handleRemoteKeyChange(next);
-        network.remoteKeys = next;
-      }
-      return;
-    }
+
     if (msg.type === 'menu_action') {
-      if (network.role === 'host') {
-        applyMenuAction(msg.action);
-      }
+      applyMenuAction(msg.action);
       return;
     }
+
     if (msg.type === 'chat') {
       if (msg.from === network.id) return;
       addChatMessage('Rakip', msg.text || '');
     }
   }
 
-  function sendLocalInput(force = false) {
-    if (network.role !== 'client') return;
+  function sendLocalInput() {
     const keys = buildNetworkInputKeys();
-    network.inputSeq++;
-    const seq = network.inputSeq;
-    const keysArr = [...keys];
-    network.pendingInputs.push({ seq, keys: keysArr });
-
-    const signature = keysArr.sort().join('|');
+    const signature = keys.sort().join('|');
     const now = performance.now();
-    if (!force && signature === network.lastSentInputSignature && now - network.lastInputSentAt < 0.1 * 1000) {
-      return;
-    }
     
-    const payload = { type: 'input', keys: keysArr, seq };
-    if (network.webrtc.ready) {
-      sendP2PMessage(payload);
-    } else {
-      sendNetworkMessage(payload);
+    // Send input changes
+    if (signature !== network.lastSentInputSignature || now - network.lastInputSentAt > 100) {
+      sendNetworkMessage({ type: 'input', keys, tick: network.clientTick });
+      network.lastSentInputSignature = signature;
+      network.lastInputSentAt = now;
     }
-    
-    network.lastSentInputSignature = signature;
-    network.lastInputSentAt = now;
   }
 
   async function flushPendingIceCandidates() {
@@ -745,11 +721,7 @@
       const text = chat.input.value.trim();
       if (!text) return;
       addChatMessage('Sen', text);
-      if (network.webrtc.ready) {
-        sendP2PMessage({ type: 'chat', text, from: network.id });
-      } else {
-        sendNetworkMessage({ type: 'chat', text, from: network.id });
-      }
+      sendNetworkMessage({ type: 'chat', text, from: network.id });
       chat.input.value = '';
       chat.input.focus();
     });
@@ -775,26 +747,14 @@
   }
 
   function startSnapshotLoop() {
-    if (network.snapshotTimer) {
-      clearInterval(network.snapshotTimer);
-    }
-    network.snapshotTimer = setInterval(() => {
-      if (network.role === 'host') {
-        const payload = { type: 'snapshot', state: buildSnapshot() };
-        if (network.webrtc.ready) {
-          sendP2PMessage(payload);
-        } else {
-          sendNetworkMessage(payload);
-        }
-      }
-    }, network.snapshotInterval);
+    // Only server sends snapshots now. We don't do this here anymore.
+    // Kept as dummy to not break old references if any.
   }
 
-  function handleRemoteKeyChange(nextKeys) {
-    if (network.role !== 'host') return;
-    const player = getRemotePlayer();
+  function handleRemoteKeyChange(playerId, nextKeys) {
+    const player = state.players[playerId];
     if (!player) return;
-    const prev = network.lastRemoteKeys;
+    const prev = network.lastRemoteKeys.get(playerId) || new Set();
     const groundCode = KEYS.groundKick;
     const prevAir = prev.has(KEYS.airKick);
     const nextAir = nextKeys.has(KEYS.airKick);
@@ -813,7 +773,7 @@
     if (!nextAir && prevAir) {
       releaseCharge(player, 'air');
     }
-    network.lastRemoteKeys = new Set(nextKeys);
+    network.lastRemoteKeys.set(playerId, new Set(nextKeys));
   }
 
   function applySnapshot(snapshot) {
@@ -836,133 +796,42 @@
     if (snapshot.selectedCharacter) {
       state.selectedCharacter = snapshot.selectedCharacter;
     }
-    const snapshotField = snapshot.field;
-    const localField = state.field;
-    const hasFieldMapping = snapshotField
-      && Number.isFinite(snapshotField.left)
-      && Number.isFinite(snapshotField.top)
-      && Number.isFinite(snapshotField.width)
-      && Number.isFinite(snapshotField.height)
-      && snapshotField.width > 0
-      && snapshotField.height > 0
-      && localField.width > 0
-      && localField.height > 0;
-    const hasLocalFieldBounds = Number.isFinite(localField.left)
-      && Number.isFinite(localField.right)
-      && Number.isFinite(localField.top)
-      && Number.isFinite(localField.bottom)
-      && localField.right > localField.left
-      && localField.bottom > localField.top;
-    const safeNumber = (value, fallback) => (Number.isFinite(value) ? value : fallback);
-    const mapX = (x) => {
-      const sourceX = safeNumber(x, localField.centerX);
-      if (!hasFieldMapping) return sourceX;
-      const ratio = clamp((sourceX - snapshotField.left) / snapshotField.width, 0, 1);
-      return localField.left + ratio * localField.width;
-    };
-    const mapY = (y) => {
-      const sourceY = safeNumber(y, localField.centerY);
-      if (!hasFieldMapping) return sourceY;
-      const ratio = clamp((sourceY - snapshotField.top) / snapshotField.height, 0, 1);
-      return localField.top + ratio * localField.height;
-    };
-    const mapVX = (vx) => {
-      const sourceVX = safeNumber(vx, 0);
-      if (!hasFieldMapping) return sourceVX;
-      return sourceVX * (localField.width / snapshotField.width);
-    };
-    const mapVY = (vy) => {
-      const sourceVY = safeNumber(vy, 0);
-      if (!hasFieldMapping) return sourceVY;
-      return sourceVY * (localField.height / snapshotField.height);
-    };
-    const mapLength = (value) => {
-      const sourceValue = safeNumber(value, 0);
-      if (!hasFieldMapping) return sourceValue;
-      const scaleX = localField.width / snapshotField.width;
-      const scaleY = localField.height / snapshotField.height;
-      return sourceValue * ((scaleX + scaleY) / 2);
-    };
-    const mapSnapshotPlayerId = (id) => {
-      if (network.role !== 'client') return id;
-      if (id === 'local') return 'remote';
-      if (id === 'remote') return 'local';
-      return id;
-    };
-    const isClient = network.role === 'client';
-    const snapshotPlayers = {};
-    let snapshotBall = null;
-    let hasSnapshotData = false;
+
     if (snapshot.ball) {
-      hasSnapshotData = true;
-      snapshotBall = {
-        r: Number.isFinite(snapshot.ball.r) ? clamp(mapLength(snapshot.ball.r), 8, 12) : state.ball.r,
-        x: mapX(snapshot.ball.x ?? state.ball.x),
-        y: mapY(snapshot.ball.y ?? state.ball.y),
-        vx: mapVX(snapshot.ball.vx ?? state.ball.vx),
-        vy: mapVY(snapshot.ball.vy ?? state.ball.vy),
-        z: mapLength(snapshot.ball.z ?? state.ball.z),
-        vz: mapLength(snapshot.ball.vz ?? state.ball.vz),
-        curveTime: snapshot.ball.curveTime ?? state.ball.curveTime,
-        curveX: snapshot.ball.curveX ?? state.ball.curveX,
-        curveY: snapshot.ball.curveY ?? state.ball.curveY,
-        curveForce: mapLength(snapshot.ball.curveForce ?? state.ball.curveForce),
-      };
-      if (hasLocalFieldBounds) {
-        snapshotBall.x = clamp(snapshotBall.x, localField.left + snapshotBall.r, localField.right - snapshotBall.r);
-        snapshotBall.y = clamp(snapshotBall.y, localField.top + snapshotBall.r, localField.bottom - snapshotBall.r);
-      }
+      state.ball.x = snapshot.ball.x;
+      state.ball.y = snapshot.ball.y;
+      state.ball.vx = snapshot.ball.vx;
+      state.ball.vy = snapshot.ball.vy;
+      state.ball.z = snapshot.ball.z;
+      state.ball.vz = snapshot.ball.vz;
+      state.ball.curveTime = snapshot.ball.curveTime;
+      state.ball.curveX = snapshot.ball.curveX;
+      state.ball.curveY = snapshot.ball.curveY;
+      state.ball.curveForce = snapshot.ball.curveForce;
+      state.ball.r = snapshot.ball.r ?? state.ball.r;
     }
+
     if (snapshot.players) {
-      snapshot.players.forEach((p) => {
-        const mappedPlayerId = mapSnapshotPlayerId(p.id);
+      snapshot.players.forEach(p => {
+        const mappedPlayerId = p.id === 'host' ? 'host' : 'guest';
         const player = state.players[mappedPlayerId];
         if (!player) return;
-        hasSnapshotData = true;
-        const nextPlayer = {
-          r: player.r,
-          x: mapX(p.x),
-          y: mapY(p.y),
-          vx: mapVX(p.vx),
-          vy: mapVY(p.vy),
-          facing: player.facing,
-        };
-        if (Number.isFinite(p.r)) {
-          const maxRadius = Math.max(11, localField.height * 0.06);
-          nextPlayer.r = clamp(mapLength(p.r), 11, maxRadius);
-        }
-        if (hasLocalFieldBounds) {
-          nextPlayer.x = clamp(nextPlayer.x, localField.left + nextPlayer.r, localField.right - nextPlayer.r);
-          nextPlayer.y = clamp(nextPlayer.y, localField.top + nextPlayer.r, localField.bottom - nextPlayer.r);
-        }
-        const facingX = safeNumber(p.facing?.x, player.facing.x);
-        const facingY = safeNumber(p.facing?.y, player.facing.y);
-        nextPlayer.facing = normalize(facingX, facingY);
 
-        if (isClient && mappedPlayerId === state.localPlayerId) {
-          player.x = nextPlayer.x;
-          player.y = nextPlayer.y;
-          player.vx = nextPlayer.vx;
-          player.vy = nextPlayer.vy;
-          player.r = nextPlayer.r;
-          player.facing = nextPlayer.facing;
-          if (snapshot.ackSeq !== undefined) {
-            network.pendingInputs = network.pendingInputs.filter(inp => inp.seq > snapshot.ackSeq);
-            network.pendingInputs.forEach(inp => {
-              updatePlayer(player, new Set(inp.keys), 1 / 60);
-              if (hasLocalFieldBounds) {
-                player.x = clamp(player.x, localField.left + player.r, localField.right - player.r);
-                player.y = clamp(player.y, localField.top + player.r, localField.bottom - player.r);
-              }
-            });
-          }
-        } else {
-          snapshotPlayers[mappedPlayerId] = nextPlayer;
+        // Misafir oyuncu kendi kontrolündeki karakteri hemen kabul etmez
+        // Gelen veriyi target olarak ayarlarız, interpolation yaparız
+        // veya strict ise direkt uygularız.
+        // Biz direkt uygulayalım, client side prediction'ı kapatıp
+        // Haxball gibi lockstep & server authority yapacağız.
+        player.x = p.x;
+        player.y = p.y;
+        player.vx = p.vx;
+        player.vy = p.vy;
+        if (p.facing) {
+          player.facing.x = p.facing.x;
+          player.facing.y = p.facing.y;
         }
         player.kickFlash = p.kickFlash;
-        if (p.character) {
-          player.character = p.character;
-        }
+        if (p.character) player.character = p.character;
         if (p.ability) {
           player.ability.mbappeBoostTime = p.ability.mbappeBoostTime ?? player.ability.mbappeBoostTime;
           player.ability.mbappeCooldown = p.ability.mbappeCooldown ?? player.ability.mbappeCooldown;
@@ -976,51 +845,14 @@
         }
       });
     }
-    if (isClient && hasSnapshotData) {
-      const payload = { players: snapshotPlayers, ball: snapshotBall };
-      network.snapshotTargets = payload;
-      network.snapshotBuffer.push({ time: performance.now(), state: payload });
-      while (network.snapshotBuffer.length > network.snapshotMax) {
-        network.snapshotBuffer.shift();
-      }
-      if (!network.clientSmoothingReady) {
-        if (snapshotBall) {
-          Object.assign(state.ball, snapshotBall);
-        }
-        Object.entries(snapshotPlayers).forEach(([id, data]) => {
-          const player = state.players[id];
-          if (!player) return;
-          player.r = data.r;
-          player.x = data.x;
-          player.y = data.y;
-          player.vx = data.vx;
-          player.vy = data.vy;
-          player.facing = data.facing;
-        });
-        network.clientSmoothingReady = true;
-      }
-    } else if (hasSnapshotData) {
-      if (snapshotBall) {
-        Object.assign(state.ball, snapshotBall);
-      }
-      Object.entries(snapshotPlayers).forEach(([id, data]) => {
-        const player = state.players[id];
-        if (!player) return;
-        player.r = data.r;
-        player.x = data.x;
-        player.y = data.y;
-        player.vx = data.vx;
-        player.vy = data.vy;
-        player.facing = data.facing;
-      });
-    }
+
     lobby.started = snapshot.lobby?.started ?? lobby.started;
     lobby.mode = snapshot.lobby?.mode ?? lobby.mode;
   }
 
   function buildSnapshot() {
     return {
-      ackSeq: network.lastGuestSeq,
+      ackTick: network.serverTick,
       mode: state.mode,
       fieldType: state.fieldType,
       score: { ...state.score },
@@ -1083,38 +915,24 @@
         network.id = msg.id;
         network.hostId = msg.hostId || network.hostId || msg.id;
         resetClientSmoothing();
-        network.inputSeq = 0;
-        network.pendingInputs = [];
-        network.lastGuestSeq = 0;
-        network.remoteKeys = new Set();
-        network.lastRemoteKeys = new Set();
+        network.remoteKeys.clear();
+        network.lastRemoteKeys.clear();
         const remoteName = network.role === 'host' ? 'Rakip' : 'Ev Sahibi';
         setupPlayers('Sen', remoteName);
         resetLobbyForPlayers('Sen', remoteName);
         computeField(false);
-        startSnapshotLoop();
-
-        // Start WebRTC connection if we are the client
-        if (network.role === 'client') {
-          (async () => {
-            const pc = setupWebRTC(network.hostId);
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            sendNetworkMessage({ type: 'signal', to: network.hostId, data: { offer } });
-          })();
-        }
       } else if (msg.type === 'signal') {
-        handleSignal(msg.from, msg.data);
+        // handleSignal(msg.from, msg.data);
       } else if (msg.type === 'snapshot') {
         if (network.role !== 'host') {
+          network.serverTick = msg.tick;
           applySnapshot(msg.state);
         }
       } else if (msg.type === 'input') {
         if (network.role === 'host') {
-          network.lastGuestSeq = msg.seq;
           const next = new Set(msg.keys || []);
-          handleRemoteKeyChange(next);
-          network.remoteKeys = next;
+          handleRemoteKeyChange('guest', next);
+          network.remoteKeys.set('guest', next);
         }
       } else if (msg.type === 'menu_action') {
         if (network.role === 'host') {
@@ -1131,10 +949,16 @@
     ws.addEventListener('close', () => {
       network.connected = false;
       network.role = 'offline';
-      network.inputSeq = 0;
-      network.pendingInputs = [];
       resetWebRTC();
     });
+    
+    // Heartbeat
+    setInterval(() => {
+      if (network.connected) {
+        network.pingStart = performance.now();
+        sendNetworkMessage({ type: 'ping' });
+      }
+    }, 1000);
   }
 
   const basePhysics = {
@@ -1345,7 +1169,8 @@
 
   function getPlayerInputSet(player) {
     if (!player) return input.keys;
-    return player.id === state.localPlayerId ? input.keys : network.remoteKeys;
+    if (player.id === state.localPlayerId) return input.keys;
+    return network.remoteKeys.get(player.id) || new Set();
   }
 
   function getMovementInfluenceDirection(player) {
@@ -1932,7 +1757,7 @@
     const guestPlayer = state.players['guest'];
 
     let lKeys = localKeys || input.keys;
-    let rKeys = remoteKeys || network.remoteKeys;
+    let rKeys = network.remoteKeys.get('guest') || new Set();
 
     // Ensure we have Set objects for .has()
     if (Array.isArray(lKeys)) lKeys = new Set(lKeys);
@@ -1972,89 +1797,10 @@
   }
 
   function applyClientSmoothing(dt) {
-    if (network.role !== 'client' || !network.clientSmoothingReady) return;
-    const buffer = network.snapshotBuffer;
-    if (!buffer.length) return;
-
-    const now = performance.now();
-    const renderTime = now - network.snapshotDelay;
-    while (buffer.length >= 2 && buffer[1].time <= renderTime) {
-      buffer.shift();
-    }
-
-    const older = buffer[0];
-    const newer = buffer[1];
-    if (!older) return;
-
-    const t = newer
-      ? clamp((renderTime - older.time) / Math.max(1, newer.time - older.time), 0, 1)
-      : 0;
-
-    const f = state.field;
-    const hasBounds = Number.isFinite(f.left)
-      && Number.isFinite(f.right)
-      && Number.isFinite(f.top)
-      && Number.isFinite(f.bottom)
-      && f.right > f.left
-      && f.bottom > f.top;
-
-    const interpBall = (() => {
-      const a = older.state.ball;
-      if (!a) return null;
-      if (!newer || !newer.state.ball) return a;
-      const b = newer.state.ball;
-      return {
-        r: lerp(a.r, b.r, t),
-        x: lerp(a.x, b.x, t),
-        y: lerp(a.y, b.y, t),
-        vx: lerp(a.vx, b.vx, t),
-        vy: lerp(a.vy, b.vy, t),
-        z: lerp(a.z, b.z, t),
-        vz: lerp(a.vz, b.vz, t),
-        curveTime: b.curveTime ?? a.curveTime,
-        curveX: b.curveX ?? a.curveX,
-        curveY: b.curveY ?? a.curveY,
-        curveForce: lerp(a.curveForce, b.curveForce, t),
-      };
-    })();
-
-    if (interpBall) {
-      state.ball.r = interpBall.r;
-      state.ball.x = interpBall.x;
-      state.ball.y = interpBall.y;
-      state.ball.vx = interpBall.vx;
-      state.ball.vy = interpBall.vy;
-      state.ball.z = interpBall.z;
-      state.ball.vz = interpBall.vz;
-      state.ball.curveTime = interpBall.curveTime;
-      state.ball.curveX = interpBall.curveX;
-      state.ball.curveY = interpBall.curveY;
-      state.ball.curveForce = interpBall.curveForce;
-      if (hasBounds) {
-        state.ball.x = clamp(state.ball.x, f.left + state.ball.r, f.right - state.ball.r);
-        state.ball.y = clamp(state.ball.y, f.top + state.ball.r, f.bottom - state.ball.r);
-      }
-    }
-
-    state.playerOrder.forEach((player) => {
-      if (player.id === state.localPlayerId) return; // Local prediction handled in applySnapshot
-      const a = older.state.players[player.id];
-      if (!a) return;
-      const b = newer?.state.players[player.id] || a;
-      player.r = lerp(a.r, b.r, t);
-      player.x = lerp(a.x, b.x, t);
-      player.y = lerp(a.y, b.y, t);
-      player.vx = lerp(a.vx, b.vx, t);
-      player.vy = lerp(a.vy, b.vy, t);
-      player.facing = normalize(
-        lerp(a.facing.x, b.facing.x, t),
-        lerp(a.facing.y, b.facing.y, t),
-      );
-      if (hasBounds) {
-        player.x = clamp(player.x, f.left + player.r, f.right - player.r);
-        player.y = clamp(player.y, f.top + player.r, f.bottom - player.r);
-      }
-    });
+    // Client prediction and interpolation logic goes here.
+    // For Haxball style, we actually DON'T want heavy interpolation that causes rubberbanding.
+    // We want direct rendering of server state + input prediction if we were doing it.
+    // For now, let's keep it simple: just render what server says (we applied it directly in applySnapshot).
   }
 
   function drawField() {
@@ -2427,17 +2173,14 @@
       let steps = 0;
       while (fixedStepAccumulator >= FIXED_SIM_STEP && steps < MAX_SIM_STEPS_PER_FRAME) {
         if (network.role === 'host') {
+          network.serverTick++;
           update(FIXED_SIM_STEP, null, null);
         } else if (network.role === 'client') {
-          const localPlayer = getLocalPlayer();
-          if (localPlayer && state.mode === 'playing' && state.freeze <= 0) {
-            updatePlayer(localPlayer, input.keys, FIXED_SIM_STEP);
-            const f = state.field;
-            if (Number.isFinite(f.left) && Number.isFinite(f.right)) {
-              localPlayer.x = clamp(localPlayer.x, f.left + localPlayer.r, f.right - localPlayer.r);
-              localPlayer.y = clamp(localPlayer.y, f.top + localPlayer.r, f.bottom - localPlayer.r);
-            }
-          }
+          network.clientTick++;
+          // Haxball tarzı strict server sync + local prediction.
+          // Şimdilik sadece render yapıyoruz çünkü input predict çok atlamaya sebep olabilir
+          // Update döngüsünü clientta çalıştırmıyoruz, sadece snapshot uyguluyoruz.
+          // Sadece kendi karakterimizi minik predict edebiliriz ama server'dan geleni ezmeyelim
         }
         fixedStepAccumulator -= FIXED_SIM_STEP;
         steps += 1;
