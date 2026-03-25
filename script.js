@@ -127,12 +127,11 @@
         return;
       }
       lobby.localPlayerName = name; // Save for later
-      ui.login.style.display = 'none';
-      ui.selection.style.display = 'block';
       
-      // Request room list via signaling server
-      if (network.ws && network.ws.readyState === WebSocket.OPEN) {
-         sendNetworkMessage({ type: 'list_rooms' });
+      // Sunucuda "oda" (room) sistemi olmadığı için (tek sunucu/tek maç mantığıyla çalıştığından),
+      // giriş yapıldığı anda ekranı gizleyip direkt oyuna bağlıyoruz.
+      if (ui.overlay) {
+        ui.overlay.style.display = 'none';
       }
     });
 
