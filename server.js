@@ -144,8 +144,17 @@ wss.on('connection', (ws) => {
     }
     
     if (msg.type === 'menu_action') {
-      if (id === room.hostId) return;
-      const hostWs = clients.get(room.hostId).ws;
+      if (id === room.hostId) {
+        room.clients.forEach((clientId) => {
+          if (clientId === room.hostId) return;
+          const clientWs = clients.get(clientId)?.ws;
+          if (clientWs) {
+            send(clientWs, { type: 'menu_action', from: id, action: msg.action || null });
+          }
+        });
+        return;
+      }
+      const hostWs = clients.get(room.hostId)?.ws;
       if (hostWs) {
         send(hostWs, { type: 'menu_action', from: id, action: msg.action || null });
       }
