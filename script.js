@@ -982,8 +982,8 @@
   }
 
   const basePhysics = {
-    playerAccel: 1600,
-    playerMaxSpeed: 300,
+    playerAccel: 1550,
+    playerMaxSpeed: 290,
     playerDamp: 8.5,
     ballDamp: 2.6,
     ballAirDamp: 0.4,
