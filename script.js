@@ -1668,7 +1668,8 @@
     if (ball.z > 0 && (leftApproach || rightApproach)) {
       const targetDistance = leftApproach ? leftDistance : rightDistance;
       const approachFactor = 1 - clamp(targetDistance / goalDropZone, 0, 1);
-      ball.vz -= physics.goalDropGravity * approachFactor * dt;
+      // Increase the gravity pull significantly when approaching the goal
+      ball.vz -= physics.goalDropGravity * approachFactor * dt * 2.5;
     }
     const canScore = ball.z <= ball.r * 0.9;
     if (canScore && inGoalMouth && ball.x - ball.r <= f.left) {
