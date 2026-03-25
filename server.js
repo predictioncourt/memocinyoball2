@@ -77,6 +77,10 @@ wss.on('connection', (ws) => {
     } catch (err) {
       return;
     }
+    if (msg.type === 'ping') {
+      send(ws, { type: 'pong' });
+      return;
+    }
     if (msg.type === 'signal') {
       const targetWs = clients.get(msg.to);
       if (targetWs) {
