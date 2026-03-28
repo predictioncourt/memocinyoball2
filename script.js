@@ -720,6 +720,15 @@
     return pc;
   }
 
+  async function startWebRTCOffer(remoteId) {
+    const pc = setupWebRTC(remoteId);
+    if (!pc || network.role !== 'host') return;
+    if (pc.signalingState !== 'stable') return;
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    sendNetworkMessage({ type: 'signal', to: remoteId, data: { offer } });
+  }
+
   function setupDataChannel(dc) {
     network.webrtc.dc = dc;
     dc.onopen = () => {
@@ -1027,7 +1036,7 @@
       } else if (msg.type === 'player_joined') {
         // Yeni bir oyuncu katıldığında WebRTC başlat
         if (network.role === 'host') {
-          setupWebRTC(msg.id);
+          startWebRTCOffer(msg.id).catch(() => {});
         }
       } else if (msg.type === 'signal') {
         handleSignal(msg.from, msg.data);
@@ -2308,6 +2317,7 @@
         if (network.role === 'host') {
           network.serverTick++;
           update(FIXED_SIM_STEP, null, null);
+          sendP2PMessage({ type: 'snapshot', tick: network.serverTick, state: buildSnapshot() });
         } else if (network.role === 'client') {
           network.clientTick++;
           // Haxball tarzı strict server sync + local prediction.
