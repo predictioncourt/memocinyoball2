@@ -78,6 +78,7 @@
       vy: 0,
       z: 0,
       vz: 0,
+      curveDuration: 0,
       curveTime: 0,
       curveX: 0,
       curveY: 0,
@@ -895,6 +896,7 @@
       state.ball.vy = snapshot.ball.vy;
       state.ball.z = snapshot.ball.z;
       state.ball.vz = snapshot.ball.vz;
+      state.ball.curveDuration = snapshot.ball.curveDuration ?? state.ball.curveDuration;
       state.ball.curveTime = snapshot.ball.curveTime;
       state.ball.curveX = snapshot.ball.curveX;
       state.ball.curveY = snapshot.ball.curveY;
@@ -1099,9 +1101,9 @@
   }
 
   const basePhysics = {
-    playerAccel: 1550,
-    playerMaxSpeed: 290,
-    playerDamp: 8.5,
+    playerAccel: 1380,
+    playerMaxSpeed: 255,
+    playerDamp: 9,
     ballDamp: 2.6,
     ballAirDamp: 0.4,
     ballBounce: 0.82,
@@ -1279,6 +1281,7 @@
     state.ball.vy = 0;
     state.ball.z = 0;
     state.ball.vz = 0;
+    state.ball.curveDuration = 0;
     state.ball.curveTime = 0;
     state.ball.curveX = 0;
     state.ball.curveY = 0;
@@ -1325,7 +1328,7 @@
     return normalize(player.facing.x, player.facing.y);
   }
 
-  function triggerJuninhoCurve(player, shotDirection) {
+  function triggerJuninhoCurve(player, shotDirection, type = 'ground') {
     if (!player || player.character !== 'juninho') return false;
     if (player.ability.juninhoCooldown > 0) return false;
     const influence = getMovementInfluenceDirection(player, false);
@@ -1337,11 +1340,14 @@
     const lateralX = influence.x - shot.x * parallel;
     const lateralY = influence.y - shot.y * parallel;
     const lateralLength = Math.hypot(lateralX, lateralY);
-    if (lateralLength < 0.2) return false;
-    state.ball.curveTime = 1.4;
+    const minCurveInput = type === 'air' ? 0.1 : 0.2;
+    if (lateralLength < minCurveInput) return false;
+    state.ball.curveDuration = type === 'air' ? 1.8 : 1.4;
+    state.ball.curveTime = state.ball.curveDuration;
     state.ball.curveX = lateralX / lateralLength;
     state.ball.curveY = lateralY / lateralLength;
-    state.ball.curveForce = (900 * lateralLength) * physics.worldScale;
+    const baseCurveForce = type === 'air' ? 1250 : 900;
+    state.ball.curveForce = (baseCurveForce * lateralLength) * physics.worldScale;
     player.ability.juninhoCooldown = 10;
     return true;
   }
@@ -1597,7 +1603,7 @@
       ball.vz = 0;
       ball.z = 0;
       player.kickFlash = 0.15;
-      triggerJuninhoCurve(player, facing);
+      triggerJuninhoCurve(player, facing, 'ground');
     } else if (type === 'air') {
       const t = clamp(chargeTime / chargeConfig.air.max, 0, 1);
       const forward = lerp(chargeConfig.air.minForward, chargeConfig.air.maxForward, t);
@@ -1607,7 +1613,7 @@
       ball.vz = Math.max(ball.vz, upward);
       ball.z = Math.max(ball.z, 1);
       player.kickFlash = 0.15;
-      triggerJuninhoCurve(player, facing);
+      triggerJuninhoCurve(player, facing, 'air');
     }
   }
 
@@ -1765,11 +1771,12 @@
     const f = state.field;
 
     if (ball.curveTime > 0) {
-      const curveRatio = ball.curveTime / 1.4; // Corrected to match new curveTime
+      const curveRatio = ball.curveDuration > 0 ? ball.curveTime / ball.curveDuration : 0;
       ball.vx += ball.curveX * ball.curveForce * curveRatio * dt;
       ball.vy += ball.curveY * ball.curveForce * curveRatio * dt;
       ball.curveTime = Math.max(0, ball.curveTime - dt);
       if (ball.curveTime === 0) {
+        ball.curveDuration = 0;
         ball.curveX = 0;
         ball.curveY = 0;
         ball.curveForce = 0;
