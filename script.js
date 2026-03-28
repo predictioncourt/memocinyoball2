@@ -1340,13 +1340,13 @@
     const lateralX = influence.x - shot.x * parallel;
     const lateralY = influence.y - shot.y * parallel;
     const lateralLength = Math.hypot(lateralX, lateralY);
-    const minCurveInput = type === 'air' ? 0.1 : 0.2;
+    const minCurveInput = type === 'air' ? 0.08 : 0.08;
     if (lateralLength < minCurveInput) return false;
-    state.ball.curveDuration = type === 'air' ? 1.8 : 1.4;
+    state.ball.curveDuration = type === 'air' ? 1.8 : 1.55;
     state.ball.curveTime = state.ball.curveDuration;
     state.ball.curveX = lateralX / lateralLength;
     state.ball.curveY = lateralY / lateralLength;
-    const baseCurveForce = type === 'air' ? 1250 : 900;
+    const baseCurveForce = type === 'air' ? 1250 : 1100;
     state.ball.curveForce = (baseCurveForce * lateralLength) * physics.worldScale;
     player.ability.juninhoCooldown = 10;
     return true;
