@@ -1310,7 +1310,7 @@
     return network.remoteKeys.get(player.id) || new Set();
   }
 
-  function getMovementInfluenceDirection(player) {
+  function getMovementInfluenceDirection(player, fallbackToFacing = true) {
     const keySet = getPlayerInputSet(player);
     let ax = 0;
     let ay = 0;
@@ -1321,18 +1321,29 @@
     if (ax !== 0 || ay !== 0) {
       return normalize(ax, ay);
     }
+    if (!fallbackToFacing) return null;
     return normalize(player.facing.x, player.facing.y);
   }
 
-  function triggerJuninhoCurve(player) {
-    if (!player || player.character !== 'juninho') return;
-    if (player.ability.juninhoCooldown > 0) return;
-    const influence = getMovementInfluenceDirection(player);
-    state.ball.curveTime = 1.4; // 1.25 -> 1.4
-    state.ball.curveX = influence.x;
-    state.ball.curveY = influence.y;
-    state.ball.curveForce = 450 * physics.worldScale; // 260 -> 450
+  function triggerJuninhoCurve(player, shotDirection) {
+    if (!player || player.character !== 'juninho') return false;
+    if (player.ability.juninhoCooldown > 0) return false;
+    const influence = getMovementInfluenceDirection(player, false);
+    if (!influence) return false;
+    const shot = shotDirection && (Math.abs(shotDirection.x) > 0.0001 || Math.abs(shotDirection.y) > 0.0001)
+      ? normalize(shotDirection.x, shotDirection.y)
+      : normalize(state.ball.vx, state.ball.vy);
+    const parallel = influence.x * shot.x + influence.y * shot.y;
+    const lateralX = influence.x - shot.x * parallel;
+    const lateralY = influence.y - shot.y * parallel;
+    const lateralLength = Math.hypot(lateralX, lateralY);
+    if (lateralLength < 0.2) return false;
+    state.ball.curveTime = 1.4;
+    state.ball.curveX = lateralX / lateralLength;
+    state.ball.curveY = lateralY / lateralLength;
+    state.ball.curveForce = (900 * lateralLength) * physics.worldScale;
     player.ability.juninhoCooldown = 10;
+    return true;
   }
 
   function startMatch() {
@@ -1586,7 +1597,7 @@
       ball.vz = 0;
       ball.z = 0;
       player.kickFlash = 0.15;
-      triggerJuninhoCurve(player);
+      triggerJuninhoCurve(player, facing);
     } else if (type === 'air') {
       const t = clamp(chargeTime / chargeConfig.air.max, 0, 1);
       const forward = lerp(chargeConfig.air.minForward, chargeConfig.air.maxForward, t);
@@ -1596,7 +1607,7 @@
       ball.vz = Math.max(ball.vz, upward);
       ball.z = Math.max(ball.z, 1);
       player.kickFlash = 0.15;
-      triggerJuninhoCurve(player);
+      triggerJuninhoCurve(player, facing);
     }
   }
 
