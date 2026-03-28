@@ -341,8 +341,8 @@
       pendingCandidates: [],
       ready: false,
     };
-    network.remoteKeys = new Set();
-    network.lastRemoteKeys = new Set();
+    network.remoteKeys = new Map();
+    network.lastRemoteKeys = new Map();
     network.lastSentInputSignature = '';
     network.lastInputSentAt = 0;
   }
@@ -985,6 +985,17 @@
     };
   }
 
+  function syncHostState(action = null) {
+    if (!(network.connected && network.role === 'host')) return;
+    if (action) {
+      sendNetworkMessage({ type: 'menu_action', action });
+      sendP2PMessage({ type: 'menu_action', action });
+    }
+    const snapshot = { type: 'snapshot', tick: network.serverTick, state: buildSnapshot() };
+    sendNetworkMessage(snapshot);
+    sendP2PMessage(snapshot);
+  }
+
   function connectNetwork() {
     const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`;
     const ws = new WebSocket(wsUrl);
@@ -1052,25 +1063,24 @@
           network.remoteKeys.set('guest', next);
         }
       } else if (msg.type === 'menu_action') {
-        if (
-          network.role === 'host' &&
-          msg.from &&
-          msg.from !== network.id &&
-          msg.action &&
-          msg.action.type === 'character'
-        ) {
-          if (msg.action.value === 'mbappe' || msg.action.value === 'juninho') {
-            setGuestCharacter(msg.action.value);
+        const isRemotePlayer = msg.from && msg.from !== network.id;
+        if (network.role === 'host' && isRemotePlayer) {
+          if (msg.action && msg.action.type === 'character') {
+            if (msg.action.value === 'mbappe' || msg.action.value === 'juninho') {
+              setGuestCharacter(msg.action.value);
+              syncHostState();
+            }
           }
-        } else {
-          applyMenuAction(msg.action, true);
+          return;
         }
+        applyMenuAction(msg.action, true);
       } else if (msg.type === 'chat') {
         if (msg.from === network.id) return;
         addChatMessage('Rakip', msg.text || '');
       } else if (msg.type === 'host_changed') {
-        network.hostId = msg.id || network.hostId;
-        network.role = msg.id === network.id ? 'host' : 'client';
+        const nextHostId = msg.hostId || msg.id || network.hostId;
+        network.hostId = nextHostId;
+        network.role = nextHostId === network.id ? 'host' : 'client';
       }
     });
     ws.addEventListener('close', () => {
@@ -1387,8 +1397,11 @@
     }
 
     if (action.type === 'start') {
-      if (isOnline && !isHost && !fromRemote) return;
-      // Client remote'dan 'start' aldığında bulunduğu adıma bakmaksızın başlatmalı
+      if (isOnline) {
+        if (!isHost && !fromRemote) return;
+        startMatch();
+        return;
+      }
       if (state.menuStep !== 'mode' && !fromRemote) return;
       startMatch();
     }
@@ -1396,10 +1409,8 @@
 
   function runLocalMenuAction(action) {
     applyMenuAction(action);
-    if (network.connected && network.role === 'host' && action.type !== 'character') {
-      sendNetworkMessage({ type: 'menu_action', action });
-      // Ayrıca webrtc kanalı üzerinden de iletelim
-      sendP2PMessage({ type: 'menu_action', action });
+    if (network.connected && network.role === 'host') {
+      syncHostState(action.type === 'character' ? null : action);
     }
   }
 
@@ -2317,6 +2328,7 @@
         if (network.role === 'host') {
           network.serverTick++;
           update(FIXED_SIM_STEP, null, null);
+          sendNetworkMessage({ type: 'snapshot', tick: network.serverTick, state: buildSnapshot() });
           sendP2PMessage({ type: 'snapshot', tick: network.serverTick, state: buildSnapshot() });
         } else if (network.role === 'client') {
           network.clientTick++;
