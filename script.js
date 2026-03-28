@@ -652,7 +652,7 @@
     }
 
     if (msg.type === 'menu_action') {
-      applyMenuAction(msg.action);
+      applyMenuAction(msg.action, true);
       return;
     }
 
@@ -869,6 +869,11 @@
     }
     if (snapshot.menuStep) {
       state.menuStep = snapshot.menuStep;
+    }
+    // Host state.mode 'playing' göndermişse misafir de doğrudan oynamaya geçmeli.
+    if (snapshot.mode === 'playing' && state.mode !== 'playing') {
+      state.mode = 'playing';
+      lobby.started = true;
     }
     if (snapshot.selectedCharacter) {
       state.selectedCharacter = snapshot.selectedCharacter;
@@ -1374,6 +1379,7 @@
 
     if (action.type === 'start') {
       if (isOnline && !isHost && !fromRemote) return;
+      // Client remote'dan 'start' aldığında bulunduğu adıma bakmaksızın başlatmalı
       if (state.menuStep !== 'mode' && !fromRemote) return;
       startMatch();
     }
@@ -1383,6 +1389,8 @@
     applyMenuAction(action);
     if (network.connected && network.role === 'host' && action.type !== 'character') {
       sendNetworkMessage({ type: 'menu_action', action });
+      // Ayrıca webrtc kanalı üzerinden de iletelim
+      sendP2PMessage({ type: 'menu_action', action });
     }
   }
 
@@ -2444,3 +2452,4 @@
     }),
   };
 })();
+  
