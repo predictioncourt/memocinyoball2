@@ -191,7 +191,7 @@ wss.on('connection', (ws) => {
             room.clients.forEach((clientId) => {
               if (clientId !== newHostId) {
                 const clientWs = clients.get(clientId).ws;
-                send(clientWs, { type: 'host_changed', hostId: newHostId });
+                send(clientWs, { type: 'host_changed', id: newHostId, hostId: newHostId });
               }
             });
           } else {
