@@ -138,6 +138,9 @@
 
     ui.btnCreate.addEventListener('click', () => {
       const name = ui.newRoomName.value.trim() || 'Oda';
+      if (document.activeElement && typeof document.activeElement.blur === 'function') {
+        document.activeElement.blur();
+      }
       sendNetworkMessage({ type: 'create_room', name, playerName: lobby.localPlayerName });
     });
 
@@ -605,6 +608,24 @@
     network.ws.send(JSON.stringify(payload));
   }
 
+  function sendP2PMessage(payload) {
+    const dc = network.webrtc.dc;
+    if (dc && dc.readyState === 'open') {
+      dc.send(JSON.stringify(payload));
+      return;
+    }
+    sendNetworkMessage(payload);
+  }
+
+  function flushQueuedP2PMessages() {
+    if (!network.webrtc.outboundQueue || network.webrtc.outboundQueue.length === 0) return;
+    if (!network.webrtc.dc || network.webrtc.dc.readyState !== 'open') return;
+    while (network.webrtc.outboundQueue.length > 0) {
+      const payload = network.webrtc.outboundQueue.shift();
+      network.webrtc.dc.send(JSON.stringify(payload));
+    }
+  }
+
   function handleRealtimeMessage(msg) {
     if (!msg || typeof msg !== 'object') return;
     
@@ -980,6 +1001,10 @@
         // Eğer role offline değilse, yani bir odaya bağlandıysak arayüzü kapat
         if (msg.role !== 'offline' && ui.overlay) {
           ui.overlay.style.display = 'none';
+          if (document.activeElement && typeof document.activeElement.blur === 'function') {
+            document.activeElement.blur();
+          }
+          input.keys.clear();
         }
 
         resetClientSmoothing();
